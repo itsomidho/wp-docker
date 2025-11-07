@@ -1,0 +1,13 @@
+# SSL Private Keys
+
+Contains SSL private key files (*-key.pem format).
+
+⚠️  IMPORTANT: Never commit actual private keys to git!
+
+Generated using mkcert:
+mkcert -cert-file nginx/ssl/certs/mysite.test.pem \
+       -key-file nginx/ssl/private/mysite.test-key.pem \
+       mysite.test
+
+Files in this directory are ignored by git (see .gitignore).
+Only this .gitkeep file is tracked to preserve directory structure.

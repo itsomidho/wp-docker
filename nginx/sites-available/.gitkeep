@@ -1,0 +1,11 @@
+# Nginx Sites Available
+
+All Nginx site configuration files go here.
+
+Files:
+- site.conf.template      # Template for creating new sites
+- default.conf            # Default/catch-all server block
+- *.test.conf             # Individual site configurations
+
+To enable a site, create a symlink in sites-enabled/:
+ln -s ../sites-available/mysite.test.conf sites-enabled/

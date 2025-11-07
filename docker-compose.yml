@@ -1,0 +1,70 @@
+services:
+  # MySQL Database (Shared across all sites)
+  mysql:
+    image: mysql:8.0
+    container_name: wp-mysql
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - wp_mysql_data:/var/lib/mysql
+    networks:
+      - network
+
+  # PhpMyAdmin (Shared database management)
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: wp-phpmyadmin
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PMA_PORT:-8080}:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    depends_on:
+      - mysql
+    networks:
+      - network
+
+  # PHP-FPM (single pool serving multiple sites)
+  php:
+    image: wordpress:php8.2-fpm
+    container_name: wp-php
+    restart: unless-stopped
+    volumes:
+      - ./sites:/var/www
+    networks:
+      - network
+
+  # Nginx (Shared reverse proxy for all sites)
+  nginx:
+    image: nginx:alpine
+    container_name: wp-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./sites:/var/www
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./logs/nginx:/var/log/nginx
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/sites-available:/etc/nginx/sites-available
+      - ./nginx/sites-enabled:/etc/nginx/sites-enabled
+    depends_on:
+      - php
+    networks:
+      - network
+
+volumes:
+  wp_mysql_data:
+    driver: local
+
+networks:
+  network:
+    driver: bridge

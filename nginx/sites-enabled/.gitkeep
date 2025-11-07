@@ -1,0 +1,12 @@
+# Nginx Sites Enabled
+
+Symlinks to enabled site configurations from sites-available/.
+
+Example:
+sites-enabled/
+└── mysite.test.conf -> ../sites-available/mysite.test.conf
+
+Only configurations symlinked here will be loaded by Nginx.
+
+To enable a site:  ln -s ../sites-available/mysite.test.conf .
+To disable a site: rm mysite.test.conf

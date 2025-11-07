@@ -1,0 +1,12 @@
+# Application Logs
+
+This directory stores log files from all containers.
+
+Structure:
+logs/
+└── nginx/            # Nginx access and error logs
+    ├── access.log
+    ├── error.log
+    └── sitename_*.log
+
+Mounted to /var/log/nginx in the Nginx container.

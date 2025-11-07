@@ -1,0 +1,45 @@
+# Environment variables
+.env
+
+# WordPress installations
+sites/*/
+
+# Database data
+*.sql
+*.sql.gz
+
+# Logs
+logs/**/*.log
+
+# Local SSL certs
+nginx/ssl/certs/*
+nginx/ssl/private/*
+nginx/sites-available/*
+nginx/sites-enabled/*
+!nginx/ssl/certs/.gitkeep
+!nginx/ssl/private/.gitkeep
+!nginx/ssl/.gitkeep
+!nginx/sites-available/.gitkeep
+!nginx/sites-enabled/.gitkeep
+!nginx/sites-available/default.conf
+!nginx/sites-enabled/default.conf
+!nginx/sites-available/site.conf.template
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Keep directory structure
+!sites/.gitkeep
+!logs/.gitkeep
+!nginx/sites-enabled/.gitkeep
+!nginx/ssl/.gitkeep
+!nginx/ssl/certs/.gitkeep
+!nginx/ssl/private/.gitkeep

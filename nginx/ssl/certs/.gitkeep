@@ -1,0 +1,11 @@
+# SSL Certificates
+
+Contains SSL certificate files (.pem format).
+
+Generated using mkcert:
+mkcert -cert-file nginx/ssl/certs/mysite.test.pem \
+       -key-file nginx/ssl/private/mysite.test-key.pem \
+       mysite.test
+
+Files in this directory are ignored by git (see .gitignore).
+Only this .gitkeep file is tracked to preserve directory structure.

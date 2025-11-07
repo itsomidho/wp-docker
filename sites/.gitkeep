@@ -1,0 +1,12 @@
+# WordPress Site Directories
+
+This directory contains all WordPress installations.
+Each site gets its own subdirectory (e.g., sites/mysite/).
+
+Structure:
+sites/
+├── mysite/           # WordPress files for mysite.test
+├── blog/             # WordPress files for blog.test
+└── ...
+
+These directories are mounted to /var/www/ in the PHP-FPM container.

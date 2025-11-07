@@ -1,0 +1,10 @@
+# SSL Certificate Storage
+
+Contains SSL certificates and private keys for HTTPS.
+
+Structure:
+ssl/
+├── certs/            # SSL certificates (.pem files)
+└── private/          # Private keys (*-key.pem files)
+
+Certificates are generated using mkcert for local development.

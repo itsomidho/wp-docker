@@ -1,0 +1,11 @@
+# Nginx Configuration Directory
+
+Contains all Nginx-related configuration files.
+
+Main files:
+- nginx.conf              # Main Nginx configuration
+- sites-available/        # All site configurations
+- sites-enabled/          # Enabled sites (symlinks)
+- ssl/                    # SSL certificates and keys
+
+This directory is mounted to /etc/nginx in the Nginx container.
