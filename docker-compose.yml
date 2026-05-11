@@ -59,7 +59,10 @@ services:
     depends_on:
       - php
     networks:
-      - network
+      network:
+        aliases:
+          - tabdeal-wp-help.test
+          - tabdeal-wp-academy.test
 
 volumes:
   wp_mysql_data:
