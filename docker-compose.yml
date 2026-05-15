@@ -33,11 +33,22 @@ services:
 
   # PHP-FPM (single pool serving multiple sites)
   php:
-    image: wordpress:php8.2-fpm
+    # image: wordpress:php8.2-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      args:
+        HTTP_PROXY: http://127.0.0.1:10808
+        HTTPS_PROXY: http://127.0.0.1:10808
+        NO_PROXY: localhost,127.0.0.1
     container_name: wp-php
     restart: unless-stopped
     volumes:
       - ./sites:/var/www
+      - ./php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - network
 
