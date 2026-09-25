@@ -14,16 +14,13 @@ logs/**/*.log
 # Local SSL certs
 nginx/ssl/certs/*
 nginx/ssl/private/*
-nginx/sites-available/*
-nginx/sites-enabled/*
+nginx/sites/*
 !nginx/ssl/certs/.gitkeep
 !nginx/ssl/private/.gitkeep
 !nginx/ssl/.gitkeep
-!nginx/sites-available/.gitkeep
-!nginx/sites-enabled/.gitkeep
-!nginx/sites-available/default.conf
-!nginx/sites-enabled/default.conf
-!nginx/sites-available/site.conf.template
+!nginx/sites/.gitkeep
+!nginx/sites/default.conf
+!nginx/sites/site.conf.template
 
 # OS files
 .DS_Store
@@ -39,7 +36,6 @@ Thumbs.db
 # Keep directory structure
 !sites/.gitkeep
 !logs/.gitkeep
-!nginx/sites-enabled/.gitkeep
 !nginx/ssl/.gitkeep
 !nginx/ssl/certs/.gitkeep
 !nginx/ssl/private/.gitkeep

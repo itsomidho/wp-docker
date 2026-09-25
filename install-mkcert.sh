@@ -71,4 +71,4 @@ mkcert -install
 
 echo ""
 print_info "mkcert installed successfully!"
-print_info "You can now run ./new-site.sh to provision WordPress sites with SSL."
+print_info "You can now run 'wpdev add' to provision WordPress sites with SSL."

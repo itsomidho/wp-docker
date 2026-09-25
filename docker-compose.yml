@@ -33,15 +33,17 @@ services:
 
   # PHP-FPM (single pool serving multiple sites)
   php:
-    # image: wordpress:php8.2-fpm
     build:
       context: .
       dockerfile: php/Dockerfile
       network: host
       args:
-        HTTP_PROXY: http://127.0.0.1:10808
-        HTTPS_PROXY: http://127.0.0.1:10808
-        NO_PROXY: localhost,127.0.0.1
+        # Only set if your network needs a proxy to reach the internet during
+        # the build (e.g. to download wp-cli/PECL extensions). Leave HTTP_PROXY
+        # unset in .env and these are empty — no proxy is used.
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     container_name: wp-php
     restart: unless-stopped
     volumes:
@@ -65,15 +67,11 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
       - ./logs/nginx:/var/log/nginx
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/sites-available:/etc/nginx/sites-available
-      - ./nginx/sites-enabled:/etc/nginx/sites-enabled
+      - ./nginx/sites:/etc/nginx/sites
     depends_on:
       - php
     networks:
-      network:
-        aliases:
-          - tabdeal-wp-help.test
-          - tabdeal-wp-academy.test
+      - network
 
 volumes:
   wp_mysql_data:

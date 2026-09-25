@@ -1,316 +1,169 @@
-# WordPress Docker Multi-Site Boilerplate
+# WordPress Docker Multi-Site — Local Development
 
-A professional Docker-based development environment for running **unlimited WordPress sites** with Nginx (sites-available/enabled), PHP-FPM, MySQL, and PhpMyAdmin.
+A Docker-based environment for running multiple WordPress sites locally with
+Nginx, a single shared PHP-FPM pool, MySQL, and phpMyAdmin. Everything is
+driven by one command, `wpdev`. Adding a site is one call and does not touch
+`docker-compose.yml`.
 
-**Perfect for**: agencies, developers managing multiple projects, or anyone running several WordPress sites locally.
+## Prerequisites
 
-## ✨ Features
+- Docker (20.10+) and Docker Compose (2.0+)
+- [mkcert](https://github.com/FiloSottile/mkcert) for trusted local SSL — install with `wpdev install-mkcert` (see below)
 
-- 🚀 **Unlimited Sites**: Simple workflow without editing `docker-compose.yml`
-- 🔒 **SSL via mkcert**: Trusted local HTTPS certificates
-- 🔧 **Nginx sites-available/enabled**: Professional configuration management
-- 🐘 **Single PHP-FPM Pool**: Official WordPress PHP 8.2-FPM image serving all sites
-- 🗄️ **MySQL 8.0**: Shared database server (separate database per site)
-- 📊 **PhpMyAdmin**: Web-based MySQL administration
-- ⚡ **Optimized**: OPcache, Gzip, FastCGI tuning
+## One-time setup: putting `wpdev` on your PATH
 
----
-
-## 📋 Prerequisites
-
-- **Docker** (20.10+) and **Docker Compose** (2.0+)
-- **mkcert** for local SSL certificates
-- Linux/macOS (Windows WSL2 supported)
-
-### Install mkcert (Ubuntu/Debian)
+The command lives in this repo as the `wpdev` script. To type `wpdev up`
+instead of `./wpdev up` from any directory, symlink it into `~/.local/bin`
+(already on `PATH` on most Linux setups, including this one):
 
 ```bash
-sudo apt install libnss3-tools
-wget -O mkcert https://github.com/FiloSottile/mkcert/releases/latest/download/mkcert-v1.4.4-linux-amd64
-chmod +x mkcert
-sudo mv mkcert /usr/local/bin/
-mkcert -install
+ln -sf "$(pwd)/wpdev" ~/.local/bin/wpdev
 ```
 
----
+Run that once per machine — it's just a symlink, not tracked by git, so a
+fresh `git clone` on another machine needs it again. If you'd rather not
+touch `~/.local/bin`, every command below also works as `./wpdev <command>`
+from inside this folder — no difference in behavior, just typing.
 
-## 🚀 Quick Start
-
-### The Simple Workflow
-
-Adding a new WordPress site involves 5 simple steps:
-
-1. **Create Nginx config** → `nginx/sites-available/yoursite.test.conf`
-2. **Download WordPress** → `sites/yoursite/`
-3. **Generate SSL cert** → `mkcert yoursite.test`
-4. **Add to /etc/hosts** → `127.0.0.1 yoursite.test`
-5. **Start containers** → `docker-compose up -d`
-
-### Option 1: Automated (Recommended)
-
-Use the `new-site.sh` script:
+Check it worked:
 
 ```bash
-./new-site.sh
+wpdev help
 ```
 
-Enter your domain (e.g., `mysite.test`) and the script will:
-- Create Nginx configuration
-- Download latest WordPress
-- Generate SSL certificates
-- Offer to add to /etc/hosts
-- Offer to start Docker containers
-
-Visit `https://mysite.test` and complete the WordPress installation!
-
-**Database Setup:** Use WordPress installer or PhpMyAdmin to create the database.
-
-### Option 2: Manual Setup
+## Getting started
 
 ```bash
-# 1. Create Nginx configuration
-DOMAIN="mysite.test"
-SITE_NAME="mysite"
-
-sed "s/DOMAIN/$DOMAIN/g" nginx/sites-available/site.conf.template > nginx/sites-available/${DOMAIN}.conf
-sed -i "s|/var/www/SITE_NAME|/var/www/$SITE_NAME|g" nginx/sites-available/${DOMAIN}.conf
-ln -s ../sites-available/${DOMAIN}.conf nginx/sites-enabled/${DOMAIN}.conf
-
-# 2. Download WordPress
-mkdir -p sites/$SITE_NAME && cd sites/$SITE_NAME
-wget https://wordpress.org/latest.tar.gz
-tar -xzf latest.tar.gz --strip-components=1 && rm latest.tar.gz
-cd ../..
-
-# 3. Generate SSL certificate
-mkcert -cert-file nginx/ssl/certs/${DOMAIN}.pem \
-       -key-file nginx/ssl/private/${DOMAIN}-key.pem \
-       $DOMAIN
-
-# 4. Add to /etc/hosts
-echo "127.0.0.1    $DOMAIN" | sudo tee -a /etc/hosts
-
-# 5. Start Docker
-docker compose up -d
+wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
+wpdev up                 # 2. start mysql, php, nginx, phpmyadmin
+wpdev add                 # 3. provision your first site
 ```
 
----
+`wpdev add` is interactive — it walks you through it:
 
-## 🌐 Access Points
+```
+$ wpdev add
+Enter domain name (e.g., mysite.test): mysite.test
+
+Domain:          mysite.test
+Site directory:  sites/mysite
+Database:        wp_mysite
+
+Continue? (y/n): y
+[STEP] 1/7 Starting MySQL + PHP...
+...
+✓ mysite.test is ready
+
+  Site:        https://mysite.test
+  Admin login: https://mysite.test/wp-admin  (admin / <generated password>)
+
+Add '127.0.0.1 mysite.test' to /etc/hosts now? (y/n): y
+```
+
+That one command:
+
+1. Creates the Nginx vhost in `nginx/sites/<domain>.conf`
+2. Downloads WordPress core into `sites/<name>/`
+3. Creates a dedicated MySQL database + user for the site
+4. Generates `wp-config.php` via WP-CLI
+5. Generates an mkcert SSL certificate
+6. Runs `wp core install` — **no browser installer, no phpMyAdmin step**
+7. Reloads Nginx and offers to add the `/etc/hosts` entry for you
+
+Visit `https://mysite.test` — it's a working, logged-in-capable WordPress
+site. The admin password is also saved to `sites/mysite/.admin-password` if
+you need it again later (or just run `wpdev creds mysite`).
+
+Run `wpdev add` again for each additional site — the containers don't
+restart, and every site gets its own vhost, cert, and database.
+
+## Command reference
+
+Everything is `wpdev <command> [argument]`:
+
+| Command | What it does |
+|---|---|
+| `wpdev up` | Start all containers |
+| `wpdev down` | Stop all containers |
+| `wpdev restart` | Restart all containers |
+| `wpdev status` | Show container status |
+| `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`) |
+| `wpdev shell php\|db\|nginx` | Shell into a container |
+| `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
+| `wpdev pma [name]` | Open phpMyAdmin in the browser — root by default, or deep-linked to one site's DB |
+| `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
+| `wpdev backup` | `mysqldump --all-databases` to `backups/` |
+| `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
+| `wpdev clean` | Remove containers (keeps data) |
+| `wpdev clean-all` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
+| `wpdev add` | Provision a new site (interactive) |
+| `wpdev remove <name>` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
+| `wpdev list` | List configured site domains |
+| `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
+| `wpdev creds <name>` | Show a site's admin/DB credentials |
+| `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
+
+`wpdev help` prints this same list from the terminal. There's nothing else to
+learn — it's a thin wrapper around `docker compose` (stack lifecycle) and
+WP-CLI (site provisioning), nothing hidden behind it.
+
+## Access points
 
 | Service | URL | Credentials |
-|---------|-----|-------------|
-| Your WordPress Sites | `https://yoursite.test` | Set during WP installation |
-| PhpMyAdmin | `http://localhost:8080` | Username: `root`<br>Password: See `.env` |
-| MySQL (external) | `localhost:3306` | Username: `root`<br>Password: See `.env` |
+|---|---|---|
+| Your sites | `https://<domain>` | `wpdev creds <name>` |
+| phpMyAdmin | `http://localhost:8080` | `root` / `DB_ROOT_PASSWORD` in `.env` |
+| MySQL (host) | `localhost:3306` | `root` / `DB_ROOT_PASSWORD` in `.env` |
 
----
+## Xdebug
 
-## 📂 Project Structure
+Xdebug is installed but only attaches on demand
+(`xdebug.start_with_request=trigger` in `php/xdebug.ini`), so normal page
+loads aren't slowed down. Trigger it per-request with the "Xdebug helper"
+browser extension, or `?XDEBUG_TRIGGER=1`. VS Code config is in
+`.vscode/launch.json` ("Listen for Xdebug (wp-docker)"), listening on 9003.
+
+## Project structure
 
 ```
 wp-docker/
-├── docker-compose.yml           # Container orchestration
-├── .env                         # Environment variables (DB passwords)
-├── new-site.sh                  # Automated site provisioning ⭐
-├── install-mkcert.sh            # mkcert installation helper
-├── manage-sites.sh              # Site management utilities
+├── docker-compose.yml           # mysql, php, nginx, phpmyadmin
+├── .env                         # DB password, ports, optional build proxy (git-ignored)
+├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
+├── install-mkcert.sh            # one-time mkcert installer, called by `wpdev install-mkcert`
+│
+├── php/
+│   ├── Dockerfile               # wordpress:php8.2-fpm + xdebug + wp-cli
+│   └── xdebug.ini
 │
 ├── nginx/
-│   ├── nginx.conf              # Main Nginx config
-│   ├── sites-available/        # All site configurations
-│   │   ├── site.conf.template  # Template for new sites
-│   │   ├── default.conf        # Catch-all/default site
-│   │   └── *.test.conf         # Your site configs
-│   ├── sites-enabled/          # Symlinks to enabled sites
-│   │   └── *.test.conf → ../sites-available/
-│   └── ssl/
-│       ├── certs/              # SSL certificates (.pem)
-│       └── private/            # SSL private keys (-key.pem)
+│   ├── nginx.conf
+│   ├── sites/                   # one *.conf per site, served directly — no enable/disable step
+│   │   ├── site.conf.template   # used by `wpdev add`
+│   │   └── default.conf         # catch-all for unmatched domains
+│   └── ssl/{certs,private}/     # mkcert output
 │
-└── sites/                      # WordPress installations
-    ├── site1/                  # Site 1 WordPress files
-    ├── site2/                  # Site 2 WordPress files
-    └── ...
+├── sites/<name>/                 # WordPress core + wp-content for each site (git-ignored)
+│   ├── .admin-password          # generated by `wpdev add`
+│   └── .db-password
+│
+└── logs/nginx/                  # access/error logs, per site
 ```
 
----
+## Troubleshooting
 
-## 🔧 WordPress Database Setup
+| Problem | Fix |
+|---|---|
+| `wpdev: command not found` | Either re-run the symlink step above, or use `./wpdev` instead (from inside this folder) |
+| SSL not trusted | `wpdev install-mkcert` |
+| Can't reach a site | `cat /etc/hosts \| grep <domain>` — add via `wpdev hosts` |
+| 502 Bad Gateway | `docker compose restart php` |
+| Nginx won't reload | `docker exec wp-nginx nginx -t` for the actual error |
+| Permission denied under `sites/` | `sudo chown -R $USER:$USER sites/` |
+| `docker compose build` fails to reach the internet | your network may need a proxy — set `HTTP_PROXY`/`HTTPS_PROXY` in `.env` (see `.env.example`); left unset, no proxy is used |
 
-When installing WordPress, use these database settings:
+## Notes
 
-- **Database Name**: Create via PhpMyAdmin or MySQL CLI (e.g., `mysite_db`)
-- **Username**: `root` (or create dedicated user)
-- **Password**: Check `.env` file → `DB_ROOT_PASSWORD`
-- **Database Host**: `mysql`
-- **Table Prefix**: `wp_`
-
-### Create Database (via CLI)
-
-```bash
-# Connect to MySQL
-docker exec -it wp-mysql mysql -u root -p
-
-# Enter password from .env
-
-# Create database and user
-CREATE DATABASE mysite_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'mysite_user'@'%' IDENTIFIED BY 'secure_password';
-GRANT ALL PRIVILEGES ON mysite_db.* TO 'mysite_user'@'%';
-FLUSH PRIVILEGES;
-EXIT;
-```
-
----
-
-## 📖 Documentation
-
-- **[QUICK-SETUP.md](QUICK-SETUP.md)** - ⚡ Fast setup guide (< 5 minutes)
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture overview
-- **[SETUP-COMPLETE.md](SETUP-COMPLETE.md)** - Post-setup verification
-
----
-
-## 🎯 Example Workflow
-
-Let's add a site called `portfolio.test`:
-
-```bash
-# Run the automated script
-./new-site.sh
-
-# Or manually:
-DOMAIN="portfolio.test"
-sed "s/DOMAIN/$DOMAIN/g" nginx/sites-available/site.conf.template > nginx/sites-available/${DOMAIN}.conf
-sed -i "s|/var/www/SITE_NAME|/var/www/portfolio|g" nginx/sites-available/${DOMAIN}.conf
-ln -s ../sites-available/${DOMAIN}.conf nginx/sites-enabled/${DOMAIN}.conf
-
-mkdir -p sites/portfolio && cd sites/portfolio
-wget https://wordpress.org/latest.tar.gz
-tar -xzf latest.tar.gz --strip-components=1 && rm latest.tar.gz
-cd ../..
-
-mkcert -cert-file nginx/ssl/certs/portfolio.test.pem \
-       -key-file nginx/ssl/private/portfolio.test-key.pem \
-       portfolio.test
-
-echo "127.0.0.1    portfolio.test" | sudo tee -a /etc/hosts
-
-docker compose up -d
-```
-
-Visit `https://portfolio.test` and install WordPress!
-
----
-
-## 🛠️ Common Commands
-
-```bash
-# Start all containers
-docker compose up -d
-
-# Stop all containers
-docker compose down
-
-# View logs
-docker compose logs -f nginx
-docker compose logs -f php
-
-# Restart Nginx (after config changes)
-docker exec wp-nginx nginx -s reload
-
-# Test Nginx configuration
-### Nginx Configuration Error?
-
-docker exec wp-nginx nginx -t
-
-# Access MySQL CLI
-docker exec -it wp-mysql mysql -u root -p
-
-# Fix file permissions
-sudo chown -R $USER:$USER sites/yoursite
-```
-
----
-
-## 🐛 Troubleshooting
-
-### SSL Certificate Not Trusted?
-```bash
-mkcert -install
-```
-
-### Can't Access Site?
-```bash
-# Verify /etc/hosts entry
-cat /etc/hosts | grep yoursite.test
-
-# Check Nginx config
-docker exec wp-nginx nginx -t
-
-# Check containers are running
-docker compose ps
-```
-
-### 502 Bad Gateway?
-```bash
-# Restart PHP-FPM
-docker compose restart php
-
-# Check PHP logs
-docker compose logs php
-```
-
-### Permission Denied?
-```bash
-# Fix ownership
-sudo chown -R $USER:$USER sites/
-```
-
----
-
-## 🔐 Security Notes
-
-- This setup is for **local development only**
-- `.env` contains database passwords (never commit to git)
-- mkcert certificates are trusted locally only
-- For production, use proper SSL certificates (Let's Encrypt)
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Please open an issue or pull request.
-
----
-
-## 📄 License
-
-MIT License - feel free to use for personal or commercial projects.
-
----
-
-## ⚙️ Technical Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Web Server | Nginx (Alpine) | Reverse proxy, SSL termination, static files |
-| PHP | WordPress Official Image (PHP 8.2-FPM) | WordPress execution |
-| Database | MySQL 8.0 | Data storage |
-| DB Admin | PhpMyAdmin | Database management UI |
-| SSL | mkcert | Local trusted certificates |
-| Orchestration | Docker Compose | Container management |
-
----
-
-## 🎓 Learn More
-
-- [Docker Documentation](https://docs.docker.com/)
-- [Nginx Documentation](https://nginx.org/en/docs/)
-- [WordPress Documentation](https://wordpress.org/support/)
-- [mkcert on GitHub](https://github.com/FiloSottile/mkcert)
-
----
-
-**Happy developing!** 🚀
+- Local development only — `.env` holds a plaintext root DB password by design.
+- mkcert certificates are trusted locally only.
+- For production, use real SSL (Let's Encrypt) and don't reuse this compose file as-is.
