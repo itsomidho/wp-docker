@@ -8,6 +8,10 @@ sites/*/
 *.sql
 *.sql.gz
 
+# Per-site snapshots (wpdev snapshot/restore) and all-DB backups (wpdev backup)
+snapshots/
+backups/
+
 # Logs
 logs/**/*.log
 

@@ -1,0 +1,14 @@
+# /etc/cron.d file — needs the user field (5th column) since it's system-wide,
+# not a per-user crontab. Logs to /var/log/wpdev/cron.log (bind-mounted from
+# ./logs/ on the host, same place nginx's logs live) — NOT to PID 1's
+# stdout/stderr: php-fpm internally remaps its own fd 1/2 to /dev/null some
+# time after its startup banner, so anything written there after that point
+# never reaches `docker logs`, discovered the hard way while building this.
+#
+# PATH must be set explicitly: cron's own default PATH (just /usr/bin:/bin)
+# doesn't include /usr/local/bin, so without this, not just `wp` but even
+# the wp phar's own `#!/usr/bin/env php` shebang fails to resolve — php
+# itself lives in /usr/local/bin in this image.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+* * * * * root /usr/local/bin/wp-cron-runner.sh >> /var/log/wpdev/cron.log 2>&1
+

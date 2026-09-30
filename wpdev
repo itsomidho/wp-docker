@@ -4,9 +4,12 @@
 #
 # Stack lifecycle:
 #   wpdev up | down | restart | status | logs [service]
-#   wpdev shell php|db|nginx
+#   wpdev doctor              Proactive health check — CA trust, orphan containers, per-site DB sanity
+#   wpdev shell php|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
-#   wpdev pma [name]          Open phpMyAdmin in the browser (root, or deep-linked to one site's DB)
+#   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
+#   wpdev portainer           Open Portainer in the browser (Docker container/image management)
+#   wpdev mailpit             Open Mailpit in the browser (every site's outgoing mail, caught)
 #   wpdev reload-nginx
 #   wpdev backup
 #   wpdev install-mkcert
@@ -15,6 +18,11 @@
 # Sites:
 #   wpdev add                 Provision a new site end-to-end (interactive prompt for domain)
 #   wpdev remove <name>       Delete a site: WP files, DB, Nginx config, SSL cert, logs
+#   wpdev clone <src> <new>   Duplicate a site (files + DB) under a new domain, URLs re-pointed
+#   wpdev snapshot <site> [label]   Save a files+DB snapshot of a site
+#   wpdev restore <site> [snap-id]  Restore a site from a snapshot (defaults to the latest)
+#   wpdev db-export <site> [file]   Dump just that site's database (default: backups/<site>_<time>.sql.gz)
+#   wpdev db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump
 #   wpdev list                List configured site domains
 #   wpdev hosts               Print /etc/hosts entries needed for all sites
 #   wpdev creds <name>        Show a site's admin/DB credentials
@@ -22,14 +30,15 @@
 #                               wpdev wp mysite plugin list
 #
 # `add` does the whole thing:
-#   1. Ensure MySQL + PHP are up (needed for the DB/wp-cli steps below)
+#   1. Ensure MySQL + PHP + Redis are up (needed for the steps below)
 #   2. Create the Nginx vhost config in nginx/sites/
 #   3. Download WordPress into sites/<name>
 #   4. Create a dedicated database + user for the site
-#   5. Generate wp-config.php via WP-CLI
+#   5. Generate wp-config.php via WP-CLI (includes Redis object cache config)
 #   6. Generate an SSL certificate with mkcert
-#   7. Run `wp core install` via WP-CLI — no browser installer, no phpMyAdmin step
-#   8. Reload Nginx, offer to add the /etc/hosts entry
+#   7. Run `wp core install` via WP-CLI — no browser installer, no Adminer step
+#   8. Install + activate the redis-cache plugin, enable the object cache
+#   9. Reload Nginx, offer to add the /etc/hosts entry
 #
 # Safe to re-run: every step in `add` is skipped if its output already exists.
 
@@ -52,6 +61,7 @@ print_step() { echo -e "${GREEN}[STEP]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_header() { echo -e "${BLUE}$1${NC}"; }
 print_error() { echo -e "${RED}✗${NC} $1"; exit 1; }
+print_fail() { echo -e "${RED}✗${NC} $1"; }
 
 show_help() {
     echo "WordPress Multi-Site Docker Environment"
@@ -63,10 +73,13 @@ show_help() {
     echo "  down                      Stop all containers"
     echo "  restart                   Restart all containers"
     echo "  status                    Show container status"
+    echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  logs [service]            Tail logs (all services, or one)"
-    echo "  shell php|db|nginx        Shell into a container"
+    echo "  shell php|db|nginx|redis  Shell into a container"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
-    echo "  pma [name]                Open phpMyAdmin in the browser (root, or deep-linked to one site's DB)"
+    echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
+    echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
+    echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  reload-nginx              Test and reload Nginx config"
     echo "  backup                    mysqldump --all-databases to backups/"
     echo "  install-mkcert            One-time local CA setup for trusted SSL"
@@ -76,6 +89,11 @@ show_help() {
     echo "Sites:"
     echo "  add                       Provision a new WordPress site"
     echo "  remove <name>             Delete a site: WP files, DB, Nginx config, SSL cert, logs"
+    echo "  clone <src> <new>         Duplicate a site (files + DB) under a new domain, URLs re-pointed"
+    echo "  snapshot <site> [label]   Save a files+DB snapshot of a site"
+    echo "  restore <site> [snap-id]  Restore a site from a snapshot (defaults to the latest)"
+    echo "  db-export <site> [file]   Dump just that site's database (default: backups/<site>_<time>.sql.gz)"
+    echo "  db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump"
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
     echo "  creds <name>              Show a site's admin/DB credentials"
@@ -98,7 +116,224 @@ cmd_up() {
 
 cmd_down() { docker compose down; }
 cmd_restart() { docker compose restart; }
-cmd_status() { docker compose ps; }
+cmd_status() {
+    docker compose ps
+    echo ""
+    print_header "=== Sites ==="
+
+    domains="$(site_domains)"
+    if [ -z "$domains" ]; then
+        echo "No sites configured yet. Run: wpdev add"
+        return
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+
+    # `cmd && var=1` here would abort this whole command under `set -e` if
+    # the container is transiently unreachable — a status dashboard must
+    # never die on the thing it's trying to report as down.
+    mysql_up=0
+    if docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then mysql_up=1; fi
+    php_up=0
+    if docker compose exec -T php true </dev/null >/dev/null 2>&1; then php_up=1; fi
+
+    printf "%-28s %-6s %-10s %s\n" "DOMAIN" "HTTP" "DATABASE" "CACHE"
+    for domain in $domains; do
+        site_name="${domain%.test}"
+        site_name="${site_name//./-}"
+        config="sites/${site_name}/wp-config.php"
+
+        # --noproxy/--resolve: check the site regardless of a shell-level
+        # http_proxy (which would otherwise silently misroute this to some
+        # unrelated proxy) or missing /etc/hosts entries. `|| true`: a
+        # connection failure must show as "down" for this one row, not
+        # abort the whole dashboard under `set -e`.
+        http_code="$(curl -sk --noproxy '*' --max-time 3 --resolve "${domain}:443:127.0.0.1" \
+            -o /dev/null -w "%{http_code}" "https://${domain}/" 2>/dev/null || true)"
+        [ -z "$http_code" ] && http_code="down"
+
+        db_status="n/a"
+        if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
+            db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+            if docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "USE \`${db_name}\`;" </dev/null >/dev/null 2>&1; then
+                db_status="OK"
+            else
+                db_status="FAIL"
+            fi
+        elif [ "$mysql_up" -ne 1 ]; then
+            db_status="down"
+        fi
+
+        cache_status="n/a"
+        if [ "$php_up" -eq 1 ] && [ -f "$config" ]; then
+            cache_status="$(docker compose exec -T php wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
+            [ -z "$cache_status" ] && cache_status="off"
+        fi
+
+        printf "%-28s %-6s %-10s %s\n" "$domain" "$http_code" "$db_status" "$cache_status"
+    done
+}
+
+cmd_doctor() {
+    warnings=0
+    fails=0
+
+    print_header "=== Stack ==="
+
+    if docker info >/dev/null 2>&1; then
+        print_info "Docker daemon is reachable"
+    else
+        print_fail "Docker daemon is not reachable — is Docker running?"
+        fails=$((fails + 1))
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+        if [ -n "${DB_ROOT_PASSWORD:-}" ]; then
+            print_info ".env exists, DB_ROOT_PASSWORD is set"
+        else
+            print_fail ".env exists but DB_ROOT_PASSWORD is empty"
+            fails=$((fails + 1))
+        fi
+    else
+        print_warning ".env doesn't exist yet — created automatically on next 'wpdev add', or copy .env.example yourself"
+        warnings=$((warnings + 1))
+    fi
+
+    expected_containers="wp-mysql wp-php wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer"
+    for c in $expected_containers; do
+        state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
+        if [ "$state" = "running" ]; then
+            print_info "${c} is running"
+        elif [ -z "$state" ]; then
+            print_warning "${c} doesn't exist yet — run: wpdev up"
+            warnings=$((warnings + 1))
+        else
+            print_fail "${c} exists but isn't running (state: ${state}) — check: docker logs ${c}"
+            fails=$((fails + 1))
+        fi
+    done
+
+    orphans="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^wp-' | grep -vFx -f <(echo "$expected_containers" | tr ' ' '\n') || true)"
+    if [ -n "$orphans" ]; then
+        print_warning "Orphaned wp-* containers not in the current stack (leftover from a renamed/removed service):"
+        echo "$orphans" | sed 's/^/    /'
+        echo "    Remove with: docker rm -f <name>"
+        warnings=$((warnings + 1))
+    else
+        print_info "No orphaned containers"
+    fi
+
+    if command -v mkcert >/dev/null 2>&1; then
+        caroot="$(mkcert -CAROOT 2>/dev/null)"
+        if [ -f "${caroot}/rootCA.pem" ]; then
+            print_info "mkcert local CA exists (${caroot})"
+        else
+            print_warning "mkcert is installed but no local CA found — run: wpdev install-mkcert"
+            warnings=$((warnings + 1))
+        fi
+    else
+        print_warning "mkcert isn't installed — run: wpdev install-mkcert"
+        warnings=$((warnings + 1))
+    fi
+
+    if [ -d docker ]; then
+        print_warning "Stray docker/ directory at the repo root (unused, likely leftover from a past mistake) — remove with: sudo rm -rf docker/"
+        warnings=$((warnings + 1))
+    fi
+
+    du_sites="$(du -sh sites 2>/dev/null | cut -f1)"
+    [ -n "$du_sites" ] && echo "  Disk: sites/ = ${du_sites:-0}"
+
+    echo ""
+    print_header "=== Sites ==="
+
+    domains="$(site_domains)"
+    if [ -z "$domains" ]; then
+        echo "No sites configured yet. Run: wpdev add"
+    else
+        if [ -f .env ]; then
+            set -a
+            # shellcheck disable=SC1091
+            source .env
+            set +a
+        fi
+        mysql_up=0
+        if docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then mysql_up=1; fi
+
+        for domain in $domains; do
+            site_name="${domain%.test}"
+            site_name="${site_name//./-}"
+            config="sites/${site_name}/wp-config.php"
+
+            echo "${domain}:"
+
+            if grep -q "[[:space:]]${domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${domain}[[:space:]]" /etc/hosts 2>/dev/null; then
+                print_info "  /etc/hosts entry present"
+            else
+                print_warning "  Missing /etc/hosts entry — run: wpdev hosts"
+                warnings=$((warnings + 1))
+            fi
+
+            if [ -f "nginx/ssl/certs/${domain}.pem" ] && [ -f "nginx/ssl/private/${domain}-key.pem" ]; then
+                print_info "  SSL certificate present"
+            else
+                print_fail "  Missing SSL certificate — run: wpdev add (skips steps that already exist)"
+                fails=$((fails + 1))
+            fi
+
+            if [ ! -f "$config" ]; then
+                print_fail "  No wp-config.php (checked ${config})"
+                fails=$((fails + 1))
+                continue
+            fi
+
+            if [ "$mysql_up" -ne 1 ]; then
+                print_warning "  Can't check database — MySQL isn't running"
+                warnings=$((warnings + 1))
+                continue
+            fi
+
+            db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+            # COUNT(*) alone can't tell "schema doesn't exist" from "schema
+            # exists but is empty" — both return 0. Check existence first
+            # (this is exactly the class of bug that caused the wp-lab
+            # incident: a wp-config.php pointing at a database that silently
+            # isn't there).
+            db_exists="$(docker compose exec -T mysql mysql -uroot -p"${DB_ROOT_PASSWORD}" -N -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name='${db_name}';" </dev/null 2>/dev/null | tr -d '[:space:]')"
+            if [ "$db_exists" != "1" ]; then
+                print_fail "  Database '${db_name}' (from wp-config.php) doesn't exist"
+                fails=$((fails + 1))
+            else
+                table_count="$(docker compose exec -T mysql mysql -uroot -p"${DB_ROOT_PASSWORD}" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${db_name}';" </dev/null 2>/dev/null | tr -d '[:space:]')"
+                if [ "${table_count:-0}" -eq 0 ]; then
+                    print_warning "  Database '${db_name}' exists but has 0 tables — looks unprovisioned or broken"
+                    warnings=$((warnings + 1))
+                else
+                    print_info "  Database '${db_name}' OK (${table_count} tables)"
+                fi
+            fi
+        done
+    fi
+
+    echo ""
+    if [ "$fails" -eq 0 ] && [ "$warnings" -eq 0 ]; then
+        print_info "Everything checks out."
+    else
+        print_header "=== Summary ==="
+        [ "$fails" -gt 0 ] && print_fail "${fails} thing(s) need fixing"
+        [ "$warnings" -gt 0 ] && print_warning "${warnings} thing(s) worth a look"
+    fi
+}
+
 cmd_logs() {
     if [ -n "$1" ]; then
         docker compose logs -f "$1"
@@ -112,8 +347,9 @@ cmd_shell() {
         php) docker exec -it wp-php sh ;;
         db) docker exec -it wp-mysql bash ;;
         nginx) docker exec -it wp-nginx sh ;;
+        redis) docker exec -it wp-redis redis-cli ;;
         *)
-            print_warning "Usage: wpdev shell php|db|nginx"
+            print_warning "Usage: wpdev shell php|db|nginx|redis"
             exit 1
             ;;
     esac
@@ -153,7 +389,7 @@ cmd_db() {
     docker exec -it wp-mysql mysql -u"${db_user}" -p"${db_pass}" "${db_name}"
 }
 
-cmd_pma() {
+cmd_adminer() {
     site="$1"
 
     if [ -f .env ]; then
@@ -162,8 +398,11 @@ cmd_pma() {
         source .env
         set +a
     fi
-    port="${PMA_PORT:-8080}"
-    url="http://localhost:${port}/"
+    port="${ADMINER_PORT:-8080}"
+    # Server is prefilled by the ADMINER_DEFAULT_SERVER env var on the
+    # container itself (docker-compose.yml) — this image doesn't take it as
+    # a URL param. username/db here do work as URL params.
+    url="http://localhost:${port}/?username=root"
     login_hint="root / \$DB_ROOT_PASSWORD from .env"
 
     if [ -n "$site" ]; then
@@ -179,7 +418,7 @@ cmd_pma() {
         # ones set up before this tool existed) don't follow that naming.
         db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
         db_user="$(grep "DB_USER" "$config" | sed -E "s/.*DB_USER',[[:space:]]*'([^']*)'.*/\1/")"
-        url="http://localhost:${port}/index.php?route=/database/structure&db=${db_name}"
+        url="http://localhost:${port}/?username=${db_user}&db=${db_name}"
 
         if [ "$db_user" = "root" ]; then
             login_hint="root / \$DB_ROOT_PASSWORD from .env"
@@ -192,6 +431,51 @@ cmd_pma() {
 
     echo "Opening ${url}"
     echo "Login: ${login_hint}"
+
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+    else
+        print_warning "No browser opener found (xdg-open/open) — open the URL above manually."
+    fi
+}
+
+cmd_portainer() {
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    port="${PORTAINER_PORT:-9000}"
+    url="http://localhost:${port}/"
+
+    echo "Opening ${url}"
+    echo "First visit: it'll ask for a setup token — get it with: docker logs wp-portainer"
+    echo "Note: Portainer manages your whole Docker daemon, not just this project's containers."
+
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+    else
+        print_warning "No browser opener found (xdg-open/open) — open the URL above manually."
+    fi
+}
+
+cmd_mailpit() {
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    port="${MAILPIT_UI_PORT:-8025}"
+    url="http://localhost:${port}/"
+
+    echo "Opening ${url}"
+    echo "Every site's outgoing mail lands here — nothing ever leaves the machine."
 
     if command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$url" >/dev/null 2>&1 &
@@ -245,6 +529,15 @@ site_domains() {
         [ "$name" = "default" ] && continue
         echo "$name"
     done
+}
+
+# Snapshot IDs sort lexically = chronologically, since they start with
+# YYYYMMDD_HHMMSS.
+site_snapshots() {
+    for d in "snapshots/${1}"/*/; do
+        [ -d "$d" ] || continue
+        basename "$d"
+    done | sort
 }
 
 cmd_list() {
@@ -343,12 +636,34 @@ cmd_remove() {
         print_error "No such site: ${domain} (checked nginx/sites/${domain}.conf and sites/${site_name}/)"
     fi
 
+    # Read the real DB_NAME/DB_USER from wp-config.php when available — same
+    # principle as clone/doctor/adminer: don't guess wp_<slug>, since sites
+    # set up before this tool existed don't follow that convention. Guessing
+    # here would drop the wrong (nonexistent) database and silently orphan
+    # the real one — exactly what happened once already with wp-lab.
+    config="sites/${site_name}/wp-config.php"
+    if [ -f "$config" ]; then
+        db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+        db_user="$(grep "DB_USER" "$config" | sed -E "s/.*DB_USER',[[:space:]]*'([^']*)'.*/\1/")"
+    fi
+    if [ -z "${db_name:-}" ]; then
+        db_slug="${site_name//-/_}"
+        db_slug="${db_slug:0:28}"
+        db_name="wp_${db_slug}"
+        db_user="wp_${db_slug}"
+    fi
+
     echo "This will permanently delete:"
     echo "  - sites/${site_name}/         (WordPress files)"
     echo "  - nginx/sites/${domain}.conf"
     echo "  - nginx/ssl/certs/${domain}.pem + private key"
     echo "  - logs/nginx/${site_name}_access.log + _error.log"
-    echo "  - MySQL database wp_${site_name//-/_} and its user"
+    if [ "$db_user" = "root" ]; then
+        echo "  - MySQL database ${db_name} (its DB_USER is 'root' — shared infra, not dropped)"
+    else
+        echo "  - MySQL database ${db_name} and its user (${db_user})"
+    fi
+    echo "  - This site's cached keys in Redis (if any)"
     echo ""
     read -p "Type the domain to confirm (${domain}): " confirm
     if [ "$confirm" != "$domain" ]; then
@@ -356,27 +671,38 @@ cmd_remove() {
         return 0
     fi
 
-    # Database — needs .env for root creds and mysql to be up. Skip gracefully
-    # if the stack isn't running rather than failing the whole removal.
+    # Needs .env for root creds and mysql to be up. Skip gracefully if the
+    # stack isn't running rather than failing the whole removal.
     if [ -f .env ]; then
         set -a
         # shellcheck disable=SC1091
         source .env
         set +a
     fi
-    db_slug="${site_name//-/_}"
-    db_slug="${db_slug:0:28}"
-    db_name="wp_${db_slug}"
-    db_user="wp_${db_slug}"
 
     if [ -n "${DB_ROOT_PASSWORD:-}" ] && docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then
-        docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
-            DROP DATABASE IF EXISTS \`${db_name}\`;
-            DROP USER IF EXISTS '${db_user}'@'%';
-        " </dev/null 2>/dev/null
-        print_info "Dropped database '${db_name}' and user '${db_user}'"
+        if [ "$db_user" = "root" ]; then
+            # Never drop the root user — it's shared across every site.
+            docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
+                DROP DATABASE IF EXISTS \`${db_name}\`;
+            " </dev/null 2>/dev/null
+            print_info "Dropped database '${db_name}'"
+        else
+            docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
+                DROP DATABASE IF EXISTS \`${db_name}\`;
+                DROP USER IF EXISTS '${db_user}'@'%';
+            " </dev/null 2>/dev/null
+            print_info "Dropped database '${db_name}' and user '${db_user}'"
+        fi
     else
         print_warning "MySQL isn't reachable — database '${db_name}' was NOT dropped. Run 'wpdev up' then re-run this, or drop it manually."
+    fi
+
+    # Redis has no volume (pure cache), so this is just tidiness, not data
+    # safety — orphaned keys under this site's prefix would otherwise sit in
+    # the shared instance until it's restarted.
+    if docker compose exec -T redis true </dev/null >/dev/null 2>&1; then
+        docker compose exec -T redis sh -c "redis-cli --scan --pattern '${site_name}:*' | xargs -r redis-cli DEL" </dev/null >/dev/null 2>&1
     fi
 
     # WordPress files — written by the container (often as www-data/root), so
@@ -410,6 +736,388 @@ cmd_remove() {
         echo "  It's still in /etc/hosts — remove it if you like:"
         echo "  sudo sed -i '/[[:space:]]${domain}\$/d' /etc/hosts"
     fi
+}
+
+cmd_clone() {
+    source_arg="$1"
+    new_arg="$2"
+    if [ -z "$source_arg" ] || [ -z "$new_arg" ]; then
+        print_warning "Usage: wpdev clone <source-site> <new-site>"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+
+    source_name="${source_arg%.test}"
+    source_name="${source_name//./-}"
+    new_name="${new_arg%.test}"
+    new_name="${new_name//./-}"
+    source_domain="${source_name}.test"
+    new_domain="${new_name}.test"
+
+    source_config="sites/${source_name}/wp-config.php"
+    if [ ! -f "$source_config" ]; then
+        print_error "No such site: ${source_name} (checked ${source_config})"
+    fi
+    if [ -d "sites/${new_name}" ] || [ -f "nginx/sites/${new_domain}.conf" ]; then
+        print_error "sites/${new_name} or nginx/sites/${new_domain}.conf already exists — run 'wpdev remove ${new_name}' first, or pick a different name."
+    fi
+
+    echo "This will clone:"
+    echo "  sites/${source_name}/  ->  sites/${new_name}/  (files + database)"
+    echo "  New domain: https://${new_domain}"
+    echo "  Admin login will be the same as ${source_domain} (it's a copy of that database)."
+    echo ""
+    read -p "Continue? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    # New DB always follows the standard wp_<slug> convention, regardless of
+    # what naming the SOURCE site happens to use (some predate this tool).
+    db_slug="${new_name//-/_}"
+    db_slug="${db_slug:0:28}"
+    new_db_name="wp_${db_slug}"
+    new_db_user="wp_${db_slug}"
+    new_db_pass="$(openssl rand -hex 16)"
+
+    print_step "1/8 Starting MySQL + PHP..."
+    docker compose up -d mysql php >/dev/null
+    print_info "MySQL and PHP are up"
+
+    print_step "2/8 Copying WordPress files..."
+    docker compose exec -T php cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
+    rm -f "sites/${new_name}/.admin-password" "sites/${new_name}/.db-password"
+    [ -f "sites/${source_name}/.admin-password" ] && cp "sites/${source_name}/.admin-password" "sites/${new_name}/.admin-password"
+    print_info "Files copied to sites/${new_name}"
+
+    print_step "3/8 Creating Nginx configuration..."
+    mkdir -p nginx/sites
+    sed "s/DOMAIN/$new_domain/g" nginx/sites/site.conf.template > "nginx/sites/${new_domain}.conf"
+    sed -i "s|/var/www/SITE_NAME|/var/www/$new_name|g" "nginx/sites/${new_domain}.conf"
+    sed -i "s/SITE_NAME/$new_name/g" "nginx/sites/${new_domain}.conf"
+    print_info "Created nginx/sites/${new_domain}.conf"
+
+    print_step "4/8 Cloning database..."
+    source_db_name="$(grep "DB_NAME" "$source_config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+    docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
+        CREATE DATABASE IF NOT EXISTS \`${new_db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+        CREATE USER IF NOT EXISTS '${new_db_user}'@'%' IDENTIFIED BY '${new_db_pass}';
+        ALTER USER '${new_db_user}'@'%' IDENTIFIED BY '${new_db_pass}';
+        GRANT ALL PRIVILEGES ON \`${new_db_name}\`.* TO '${new_db_user}'@'%';
+        FLUSH PRIVILEGES;
+    " </dev/null 2>/dev/null
+    docker compose exec -T mysql sh -c "mysqldump -uroot -p'${DB_ROOT_PASSWORD}' '${source_db_name}' | mysql -uroot -p'${DB_ROOT_PASSWORD}' '${new_db_name}'" </dev/null
+    echo "$new_db_pass" > "sites/${new_name}/.db-password"
+    print_info "Database '${source_db_name}' cloned to '${new_db_name}'"
+
+    print_step "5/8 Rewriting wp-config.php for the clone..."
+    # wp config set (not sed) so it works regardless of the source's file
+    # layout/formatting, and correctly adds constants that aren't already there.
+    docker compose exec -T php wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set WP_HOME "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set WP_SITEURL "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    print_info "wp-config.php updated"
+
+    print_step "6/8 Generating SSL certificate..."
+    mkdir -p nginx/ssl/certs nginx/ssl/private
+    if ! command -v mkcert >/dev/null 2>&1; then
+        print_warning "mkcert not installed. Run 'wpdev install-mkcert' then re-run this."
+    else
+        mkcert -install 2>/dev/null || true
+        mkcert -cert-file "nginx/ssl/certs/${new_domain}.pem" \
+               -key-file "nginx/ssl/private/${new_domain}-key.pem" \
+               "${new_domain}" 2>/dev/null
+        print_info "SSL certificate created"
+    fi
+
+    print_step "7/8 Re-pointing URLs and enabling object cache..."
+    docker compose exec -T php wp search-replace "https://${source_domain}" "https://${new_domain}" \
+        --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp search-replace "${source_domain}" "${new_domain}" \
+        --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
+    docker compose exec -T php wp redis enable --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+    print_info "URLs re-pointed, object cache enabled"
+
+    print_step "8/8 Reloading Nginx..."
+    docker compose up -d nginx >/dev/null
+    docker exec wp-nginx nginx -t >/dev/null 2>&1 && docker exec wp-nginx nginx -s reload >/dev/null 2>&1 || true
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${GREEN}✓ ${new_domain} is ready (cloned from ${source_domain})${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo -e "  Site:        ${GREEN}https://${new_domain}${NC}"
+    echo "  Admin login: same as ${source_domain} (wpdev creds ${source_name})"
+    echo "  Database:    ${new_db_name} / ${new_db_user} (password in sites/${new_name}/.db-password)"
+    echo ""
+
+    if grep -q "[[:space:]]${new_domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${new_domain}[[:space:]]" /etc/hosts 2>/dev/null; then
+        print_info "${new_domain} already in /etc/hosts"
+    else
+        read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts
+        if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
+            echo "127.0.0.1    ${new_domain}" | sudo tee -a /etc/hosts >/dev/null
+            print_info "Added ${new_domain} to /etc/hosts"
+        else
+            echo "  Remember: echo '127.0.0.1    ${new_domain}' | sudo tee -a /etc/hosts"
+        fi
+    fi
+    echo ""
+}
+
+cmd_snapshot() {
+    site_arg="$1"
+    label="$2"
+    if [ -z "$site_arg" ]; then
+        print_warning "Usage: wpdev snapshot <site> [label]"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+
+    site_name="${site_arg%.test}"
+    site_name="${site_name//./-}"
+    config="sites/${site_name}/wp-config.php"
+    if [ ! -f "$config" ]; then
+        print_error "No such site: ${site_name} (checked ${config})"
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    timestamp="$(date +%Y%m%d_%H%M%S)"
+    snap_id="$timestamp"
+    if [ -n "$label" ]; then
+        safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_-' '-')"
+        snap_id="${timestamp}_${safe_label}"
+    fi
+    snap_dir="snapshots/${site_name}/${snap_id}"
+    mkdir -p "$snap_dir"
+
+    db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+
+    print_step "1/2 Dumping database (${db_name})..."
+    docker compose exec -T mysql mysqldump -uroot -p"$DB_ROOT_PASSWORD" "$db_name" </dev/null 2>/dev/null | gzip > "$snap_dir/db.sql.gz"
+    print_info "Database dumped ($(du -h "$snap_dir/db.sql.gz" | cut -f1))"
+
+    print_step "2/2 Archiving files..."
+    docker compose exec -T php tar -czf - -C /var/www "${site_name}" </dev/null > "$snap_dir/files.tar.gz"
+    print_info "Files archived ($(du -h "$snap_dir/files.tar.gz" | cut -f1))"
+
+    echo ""
+    print_info "Snapshot saved: ${snap_id}"
+    echo "  Restore with: wpdev restore ${site_name} ${snap_id}"
+    echo "  (or just 'wpdev restore ${site_name}' to restore the most recent snapshot)"
+}
+
+cmd_restore() {
+    site_arg="$1"
+    snap_id="$2"
+    if [ -z "$site_arg" ]; then
+        print_warning "Usage: wpdev restore <site> [snapshot-id]"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+
+    site_name="${site_arg%.test}"
+    site_name="${site_name//./-}"
+    domain="${site_name}.test"
+
+    available="$(site_snapshots "$site_name")"
+    if [ -z "$available" ]; then
+        print_error "No snapshots found for '${site_name}'. Create one first: wpdev snapshot ${site_name}"
+    fi
+
+    if [ -z "$snap_id" ]; then
+        snap_id="$(echo "$available" | tail -1)"
+        print_info "No snapshot specified — using the most recent: ${snap_id}"
+    fi
+
+    snap_dir="snapshots/${site_name}/${snap_id}"
+    if [ ! -d "$snap_dir" ]; then
+        print_warning "No such snapshot: ${snap_id}"
+        echo "Available snapshots for ${site_name}:"
+        echo "$available" | sed 's/^/  /'
+        return 1
+    fi
+
+    echo "This will overwrite the CURRENT files and database of ${domain} with"
+    echo "snapshot '${snap_id}'. The current state is NOT saved first — take a new"
+    echo "snapshot now if you want to keep it (wpdev snapshot ${site_name})."
+    echo ""
+    read -p "Type the domain to confirm (${domain}): " confirm
+    if [ "$confirm" != "$domain" ]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    db_name="$(grep "DB_NAME" "sites/${site_name}/wp-config.php" 2>/dev/null | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+    if [ -z "$db_name" ]; then
+        db_slug="${site_name//-/_}"
+        db_slug="${db_slug:0:28}"
+        db_name="wp_${db_slug}"
+    fi
+
+    print_step "1/3 Restoring database (${db_name})..."
+    docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
+        DROP DATABASE IF EXISTS \`${db_name}\`;
+        CREATE DATABASE \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    " </dev/null 2>/dev/null
+    gunzip -c "$snap_dir/db.sql.gz" | docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" "$db_name" 2>/dev/null
+    print_info "Database restored"
+
+    print_step "2/3 Restoring files..."
+    docker compose exec -T php sh -c "rm -rf /var/www/${site_name}" </dev/null
+    docker compose exec -T php tar -xzf - -C /var/www < "$snap_dir/files.tar.gz"
+    print_info "Files restored"
+
+    print_step "3/3 Flushing this site's cache..."
+    if docker compose exec -T redis true </dev/null >/dev/null 2>&1; then
+        docker compose exec -T redis sh -c "redis-cli --scan --pattern '${site_name}:*' | xargs -r redis-cli DEL" </dev/null >/dev/null 2>&1
+    fi
+    docker exec wp-nginx nginx -t >/dev/null 2>&1 && docker exec wp-nginx nginx -s reload >/dev/null 2>&1 || true
+    print_info "Cache flushed (avoids serving stale cached content from before the restore)"
+
+    echo ""
+    print_info "${domain} restored to snapshot '${snap_id}'."
+}
+
+cmd_db_export() {
+    site_arg="$1"
+    out_file="$2"
+    if [ -z "$site_arg" ]; then
+        print_warning "Usage: wpdev db-export <site> [output-file]"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+
+    site_name="${site_arg%.test}"
+    site_name="${site_name//./-}"
+    config="sites/${site_name}/wp-config.php"
+    if [ ! -f "$config" ]; then
+        print_error "No such site: ${site_name} (checked ${config})"
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+
+    if [ -z "$out_file" ]; then
+        mkdir -p backups
+        out_file="backups/${site_name}_$(date +%Y%m%d_%H%M%S).sql.gz"
+    fi
+    out_dir="$(dirname "$out_file")"
+    [ "$out_dir" != "." ] && mkdir -p "$out_dir"
+
+    docker compose exec -T mysql mysqldump -uroot -p"$DB_ROOT_PASSWORD" "$db_name" </dev/null 2>/dev/null | gzip > "$out_file"
+    print_info "Exported '${db_name}' (${site_name}) to ${out_file} ($(du -h "$out_file" | cut -f1))"
+}
+
+cmd_db_import() {
+    site_arg="$1"
+    in_file="$2"
+    if [ -z "$site_arg" ] || [ -z "$in_file" ]; then
+        print_warning "Usage: wpdev db-import <site> <file.sql[.gz]>"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+    if [ ! -f "$in_file" ]; then
+        print_error "No such file: ${in_file}"
+    fi
+
+    site_name="${site_arg%.test}"
+    site_name="${site_name//./-}"
+    domain="${site_name}.test"
+    config="sites/${site_name}/wp-config.php"
+    if [ ! -f "$config" ]; then
+        print_error "No such site: ${site_name} (checked ${config})"
+    fi
+
+    db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+
+    echo "This will REPLACE the entire current database '${db_name}' for ${domain}"
+    echo "with the contents of ${in_file}. The current content is NOT saved first —"
+    echo "run 'wpdev db-export ${site_name}' first if you want to keep it."
+    echo ""
+    read -p "Type the domain to confirm (${domain}): " confirm
+    if [ "$confirm" != "$domain" ]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    print_step "1/2 Importing into '${db_name}'..."
+    docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
+        DROP DATABASE IF EXISTS \`${db_name}\`;
+        CREATE DATABASE \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    " </dev/null 2>/dev/null
+
+    if gzip -t "$in_file" 2>/dev/null; then
+        gunzip -c "$in_file" | docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" "$db_name" 2>/dev/null
+    else
+        docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" "$db_name" < "$in_file" 2>/dev/null
+    fi
+    print_info "Database imported"
+
+    print_step "2/2 Flushing this site's cache..."
+    if docker compose exec -T redis true </dev/null >/dev/null 2>&1; then
+        docker compose exec -T redis sh -c "redis-cli --scan --pattern '${site_name}:*' | xargs -r redis-cli DEL" </dev/null >/dev/null 2>&1
+    fi
+    print_info "Cache flushed"
+
+    echo ""
+    print_info "${domain} database replaced from ${in_file}."
+    echo "If this dump came from a different domain, re-point URLs with:"
+    echo "  wpdev wp ${site_name} search-replace https://OLDDOMAIN https://${domain} --all-tables"
 }
 
 cmd_add() {
@@ -457,15 +1165,15 @@ cmd_add() {
         exit 0
     fi
 
-    # 1. Bring up MySQL + PHP (needed for wp-cli/db steps below; harmless if
-    #    already running). Nginx is brought up/reloaded later once its config
-    #    and cert exist.
-    print_step "1/7 Starting MySQL + PHP..."
-    docker compose up -d mysql php >/dev/null
-    print_info "MySQL and PHP are up"
+    # 1. Bring up MySQL + PHP + Redis (needed for wp-cli/db/cache steps below;
+    #    harmless if already running). Nginx is brought up/reloaded later
+    #    once its config and cert exist.
+    print_step "1/8 Starting MySQL + PHP + Redis..."
+    docker compose up -d mysql php redis >/dev/null
+    print_info "MySQL, PHP and Redis are up"
 
     # 2. Nginx configuration — one file, immediately served (no enable step)
-    print_step "2/7 Creating Nginx configuration..."
+    print_step "2/8 Creating Nginx configuration..."
     mkdir -p nginx/sites
 
     if [ -f "nginx/sites/${domain}.conf" ]; then
@@ -482,7 +1190,7 @@ cmd_add() {
     fi
 
     # 3. Download WordPress
-    print_step "3/7 Downloading WordPress..."
+    print_step "3/8 Downloading WordPress..."
     mkdir -p "sites/$site_name"
 
     if [ "$(ls -A "sites/$site_name" 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
@@ -502,7 +1210,7 @@ cmd_add() {
     fi
 
     # 4. Database + dedicated DB user
-    print_step "4/7 Provisioning database..."
+    print_step "4/8 Provisioning database..."
 
     # Safety net: files already existed (step 3 skipped the download) but
     # wp-config.php is missing — this is NOT the normal "brand new site"
@@ -540,7 +1248,7 @@ cmd_add() {
     print_info "Database '${db_name}' and user '${db_user}' ready"
 
     # 5. wp-config.php via WP-CLI
-    print_step "5/7 Generating wp-config.php..."
+    print_step "5/8 Generating wp-config.php..."
     if [ -f "sites/${site_name}/wp-config.php" ]; then
         print_info "wp-config.php already exists. Skipping."
     else
@@ -559,12 +1267,16 @@ define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 define('FS_METHOD', 'direct');
+define('WP_CACHE', true);
+define('WP_REDIS_HOST', 'redis');
+define('WP_REDIS_PREFIX', '${site_name}:');
+define('DISABLE_WP_CRON', true);
 PHP
         print_info "wp-config.php created"
     fi
 
     # 6. SSL certificate
-    print_step "6/7 Generating SSL certificate..."
+    print_step "6/8 Generating SSL certificate..."
     mkdir -p nginx/ssl/certs nginx/ssl/private
 
     if ! command -v mkcert >/dev/null 2>&1; then
@@ -583,7 +1295,7 @@ PHP
     fi
 
     # 7. WordPress install (skip the browser installer entirely)
-    print_step "7/7 Installing WordPress..."
+    print_step "7/8 Installing WordPress..."
     admin_pass_file="sites/${site_name}/.admin-password"
     if docker compose exec -T php wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "WordPress already installed. Skipping."
@@ -609,6 +1321,27 @@ PHP
 
     admin_pass="$(cat "$admin_pass_file" 2>/dev/null || echo '(see sites/'"$site_name"'/.admin-password)')"
 
+    # 8. Object cache — install + activate the redis-cache plugin and drop in
+    # its object-cache.php, then verify Redis actually responds. A failed
+    # `redis enable` is a warning, not a hard stop: the site works fine
+    # without an object cache, just slower.
+    print_step "8/8 Enabling Redis object cache..."
+    if docker compose exec -T php wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+        print_info "redis-cache plugin already installed"
+    else
+        docker compose exec -T php wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+        print_info "redis-cache plugin installed and activated"
+    fi
+
+    if docker compose exec -T php wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
+        print_info "Object cache already enabled"
+    elif docker compose exec -T php wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+        print_info "Object cache enabled"
+    else
+        print_warning "Could not enable the Redis object cache — site works fine without it."
+        print_warning "Check with: wpdev wp ${site_name} redis status"
+    fi
+
     # Bring up Nginx (and reload, in case it was already running) so the new
     # vhost + cert are picked up.
     docker compose up -d nginx >/dev/null
@@ -622,6 +1355,8 @@ PHP
     echo -e "  Site:        ${GREEN}https://${domain}${NC}"
     echo -e "  Admin login: ${GREEN}https://${domain}/wp-admin${NC}  (admin / ${admin_pass})"
     echo "  Database:    ${db_name} / ${db_user} (password in sites/${site_name}/.db-password)"
+    echo "  Object cache: Redis (check with: wpdev wp ${site_name} redis status)"
+    echo "  Outgoing mail: caught by Mailpit — wpdev mailpit"
     echo ""
     echo "Credentials are also saved in sites/${site_name}/.admin-password and .db-password"
     echo "(both git-ignored, since sites/*/ is excluded)."
@@ -651,10 +1386,13 @@ case "${1:-help}" in
     down) cmd_down ;;
     restart) cmd_restart ;;
     status) cmd_status ;;
+    doctor) cmd_doctor ;;
     logs) cmd_logs "$2" ;;
     shell) cmd_shell "$2" ;;
     db) cmd_db "$2" ;;
-    pma) cmd_pma "$2" ;;
+    adminer) cmd_adminer "$2" ;;
+    portainer) cmd_portainer ;;
+    mailpit) cmd_mailpit ;;
     reload-nginx) cmd_reload_nginx ;;
     backup) cmd_backup ;;
     install-mkcert) cmd_install_mkcert ;;
@@ -662,6 +1400,11 @@ case "${1:-help}" in
     clean-all) cmd_clean_all ;;
     add) cmd_add ;;
     remove) cmd_remove "$2" ;;
+    clone) cmd_clone "$2" "$3" ;;
+    snapshot) cmd_snapshot "$2" "$3" ;;
+    restore) cmd_restore "$2" "$3" ;;
+    db-export) cmd_db_export "$2" "$3" ;;
+    db-import) cmd_db_import "$2" "$3" ;;
     list) cmd_list ;;
     hosts) cmd_hosts ;;
     creds) cmd_creds "$2" ;;

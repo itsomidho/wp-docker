@@ -14,18 +14,62 @@ services:
     networks:
       - network
 
-  # PhpMyAdmin (Shared database management)
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    container_name: wp-phpmyadmin
+  # Redis (Shared object cache for all sites — see php/Dockerfile for the
+  # phpredis extension, and `wpdev add` for per-site setup). Purely a cache,
+  # not a datastore — no volume, a cache miss just costs a slower page load.
+  redis:
+    image: redis:alpine
+    container_name: wp-redis
     restart: unless-stopped
-    env_file: .env
     ports:
-      - "${PMA_PORT:-8080}:80"
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - network
+
+  # Mailpit (catches every outgoing email from every site — see
+  # php/msmtprc + php/mail.ini for how PHP is wired to relay here)
+  mailpit:
+    image: axllent/mailpit
+    container_name: wp-mailpit
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+    networks:
+      - network
+
+  # Portainer (Docker container/image management UI)
+  #
+  # NOTE: this mounts the host's docker.sock, which gives Portainer — and
+  # anyone who can reach its UI — full control of your ENTIRE Docker daemon,
+  # not just this project's containers. That's how Portainer works; it's not
+  # scoped to this compose project. First visit to
+  # http://localhost:${PORTAINER_PORT:-9000} asks for a one-time setup token —
+  # get it with `docker logs wp-portainer` — then you create your own admin
+  # account.
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: wp-portainer
+    restart: unless-stopped
+    ports:
+      - "${PORTAINER_PORT:-9000}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - wp_portainer_data:/data
+    networks:
+      - network
+
+  # Adminer (Shared database management)
+  adminer:
+    image: adminer
+    container_name: wp-adminer
+    restart: unless-stopped
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
     environment:
-      PMA_HOST: mysql
-      PMA_PORT: 3306
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      # Prefills the login form's Server field with our mysql service name —
+      # this image only reads it from the env, not from a URL query param.
+      ADMINER_DEFAULT_SERVER: mysql
     depends_on:
       - mysql
     networks:
@@ -49,10 +93,16 @@ services:
     volumes:
       - ./sites:/var/www
       - ./php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+      - ./php/mail.ini:/usr/local/etc/php/conf.d/mail.ini
+      - ./php/msmtprc:/etc/msmtprc
+      - ./php/wp-cron-runner.sh:/usr/local/bin/wp-cron-runner.sh
+      - ./logs:/var/log/wpdev
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - network
+    depends_on:
+      - mailpit
 
   # Nginx (Shared reverse proxy for all sites)
   nginx:
@@ -75,6 +125,8 @@ services:
 
 volumes:
   wp_mysql_data:
+    driver: local
+  wp_portainer_data:
     driver: local
 
 networks:
