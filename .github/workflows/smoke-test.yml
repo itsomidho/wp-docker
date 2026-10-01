@@ -54,7 +54,7 @@ jobs:
           (a past bug left the PHP_UPSTREAM placeholder unsubstituted,
           which silently invalidated nginx's entire config)
         run: |
-          printf 'y\n' | ./wpdev clone citest citest-clone
+          printf 'y\nn\n' | ./wpdev clone citest citest-clone
           docker exec wp-nginx nginx -t
           code=$(curl -sk --resolve citest-clone.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest-clone.test/)
           echo "clone HTTP $code"

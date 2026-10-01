@@ -1045,7 +1045,14 @@ cmd_clone() {
     if grep -q "[[:space:]]${new_domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${new_domain}[[:space:]]" /etc/hosts 2>/dev/null; then
         print_info "${new_domain} already in /etc/hosts"
     else
-        read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts
+        # || true: everything above this already succeeded and printed its
+        # own success banner -- if stdin hits EOF here (scripted/non-
+        # interactive use that didn't expect this trailing optional prompt,
+        # e.g. CI), `read`'s nonzero exit would otherwise take set -e down
+        # with it this late, discarding a fully-completed clone over a
+        # cosmetic prompt. EOF leaves add_hosts empty, which the check
+        # below already treats the same as answering "n".
+        read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts || true
         if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
             echo "127.0.0.1    ${new_domain}" | sudo tee -a /etc/hosts >/dev/null
             print_info "Added ${new_domain} to /etc/hosts"
@@ -1564,7 +1571,11 @@ PHP
     if grep -q "[[:space:]]${domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${domain}[[:space:]]" /etc/hosts 2>/dev/null; then
         print_info "${domain} already in /etc/hosts"
     else
-        read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " add_hosts
+        # || true: same reasoning as cmd_clone's identical prompt -- the
+        # site is already fully provisioned by this point, so EOF on this
+        # trailing optional prompt (scripted/non-interactive use) shouldn't
+        # take set -e down with it and discard an already-successful run.
+        read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " add_hosts || true
         if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
             echo "127.0.0.1    ${domain}" | sudo tee -a /etc/hosts >/dev/null
             print_info "Added ${domain} to /etc/hosts"
