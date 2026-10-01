@@ -36,8 +36,15 @@ jobs:
           echo "HTTP $code"
           [ "$code" = "200" ]
 
-      - name: doctor reports healthy
-        run: ./wpdev doctor | tee /tmp/doctor.log && grep -q "Everything checks out" /tmp/doctor.log
+      - name: doctor reports no failures
+        # Not "Everything checks out": this stack deliberately never starts
+        # adminer/portainer (wpdev add doesn't need them) and skips the
+        # /etc/hosts entry (curl --resolve is used instead), both of which
+        # doctor correctly reports as warnings, not failures. Asserting on
+        # the absence of "need fixing" (only printed when fails > 0) checks
+        # what's actually meaningful here without requiring a fuller stack
+        # than this test needs.
+        run: ./wpdev doctor | tee /tmp/doctor.log; ! grep -q "thing(s) need fixing" /tmp/doctor.log
 
       - name: Redis object cache connected
         run: ./wpdev wp citest redis status | grep -q "Connected"
@@ -76,11 +83,12 @@ jobs:
           echo "HTTP after php82 restart, no nginx reload: $code"
           [ "$code" = "200" ]
 
-      - name: Remove both sites and confirm doctor is still clean
+      - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone
           printf 'citest.test\n' | ./wpdev remove citest
-          ./wpdev doctor | tee /tmp/doctor2.log && grep -q "Everything checks out" /tmp/doctor2.log
+          ./wpdev doctor | tee /tmp/doctor2.log
+          ! grep -q "thing(s) need fixing" /tmp/doctor2.log
 
       - name: Dump logs on failure
         if: failure()
