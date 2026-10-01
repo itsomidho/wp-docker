@@ -1,0 +1,99 @@
+name: Smoke test
+
+# Provisions a real site end-to-end against the actual stack and exercises
+# the exact failure classes found by hand during development: cron running
+# a site under the wrong PHP version, `clone` leaving an invalid nginx
+# vhost, and nginx caching a stale upstream IP after a phpXX container
+# restart. A green run here is a real guarantee those don't regress --
+# every prior incident in this list was first caught by someone manually
+# poking at a live stack, not by anything automatic.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .env
+        run: cp .env.example .env
+
+      - name: Install mkcert and trust the local CA
+        run: ./wpdev install-mkcert
+
+      - name: Provision a test site (domain, PHP version, continue, skip /etc/hosts)
+        run: printf 'citest.test\n8.2\ny\nn\n' | ./wpdev add
+
+      - name: Site responds over HTTPS
+        run: |
+          code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/)
+          echo "HTTP $code"
+          [ "$code" = "200" ]
+
+      - name: doctor reports healthy
+        run: ./wpdev doctor | tee /tmp/doctor.log && grep -q "Everything checks out" /tmp/doctor.log
+
+      - name: Redis object cache connected
+        run: ./wpdev wp citest redis status | grep -q "Connected"
+
+      - name: >
+          Regression test -- clone must produce a valid nginx vhost
+          (a past bug left the PHP_UPSTREAM placeholder unsubstituted,
+          which silently invalidated nginx's entire config)
+        run: |
+          printf 'y\n' | ./wpdev clone citest citest-clone
+          docker exec wp-nginx nginx -t
+          code=$(curl -sk --resolve citest-clone.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest-clone.test/)
+          echo "clone HTTP $code"
+          [ "$code" = "200" ]
+
+      - name: >
+          Regression test -- cron must run each site under its own PHP
+          version, with no xdebug.log permission-race warnings
+        run: |
+          sleep 70
+          cat logs/cron.log
+          grep -q "citest (php8.2)" logs/cron.log
+          grep -q "citest-clone (php8.2)" logs/cron.log
+          ! grep -q "could not be opened" logs/cron.log
+          ! grep -q "syntax error" logs/cron.log
+          ! grep -qE "You are running 8\.[^2]" logs/cron.log
+
+      - name: >
+          Regression test -- restarting a phpXX container must not break
+          nginx routing (a past bug cached the old container's IP until
+          nginx was manually reloaded)
+        run: |
+          docker compose restart php82
+          sleep 2
+          code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/)
+          echo "HTTP after php82 restart, no nginx reload: $code"
+          [ "$code" = "200" ]
+
+      - name: Remove both sites and confirm doctor is still clean
+        run: |
+          printf 'citest-clone.test\n' | ./wpdev remove citest-clone
+          printf 'citest.test\n' | ./wpdev remove citest
+          ./wpdev doctor | tee /tmp/doctor2.log && grep -q "Everything checks out" /tmp/doctor2.log
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "--- docker compose ps ---"
+          docker compose ps
+          echo "--- cron.log ---"
+          cat logs/cron.log 2>/dev/null || true
+          echo "--- nginx error log ---"
+          cat logs/nginx/*error.log 2>/dev/null || true
+          echo "--- doctor ---"
+          ./wpdev doctor || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --rmi local
