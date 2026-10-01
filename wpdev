@@ -271,7 +271,13 @@ cmd_doctor() {
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
     for c in $expected_containers; do
-        state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
+        # || true: docker inspect exits nonzero for a container that doesn't
+        # exist at all (e.g. adminer/portainer, which `wpdev add` never
+        # starts) -- a bare assignment like this one is NOT exempt from
+        # set -e the way `cmd1 && cmd2` is, so without this the whole
+        # script aborts right here instead of reaching the `-z "$state"`
+        # branch below that's meant to handle exactly this case.
+        state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" || true
         if [ "$state" = "running" ]; then
             print_info "${c} is running"
         elif [ -z "$state" ]; then
