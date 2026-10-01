@@ -96,6 +96,7 @@ show_help() {
     echo "  install-mkcert            One-time local CA setup for trusted SSL"
     echo "  clean                     Remove containers (keeps data)"
     echo "  clean-all                 Remove containers + volumes (⚠ deletes data)"
+    echo "  uninstall                 Remove containers/volumes/images, the wpdev symlink, and optionally this whole directory"
     echo ""
     echo "Sites:"
     echo "  add                       Provision a new WordPress site (prompts for domain + PHP version)"
@@ -536,6 +537,51 @@ cmd_clean_all() {
         echo "All data removed."
     else
         echo "Cancelled."
+    fi
+}
+
+# Full removal, in three separately-confirmed stages — each one is
+# independently safe to stop after, so cancelling partway through never
+# leaves a confusing half-removed state:
+#   1. containers + volumes + the images built from this repo (same as
+#      clean-all, plus --rmi local, since clean-all alone leaves the
+#      wp-local-dev-php8x images behind)
+#   2. the `wpdev` symlink on PATH (only if it actually points at this
+#      checkout -- never touches a symlink belonging to some other project)
+#   3. this directory itself, including every site's files, logs,
+#      snapshots, and backups -- requires typing DELETE, not just yes/no,
+#      since unlike steps 1-2 there is no undo
+cmd_uninstall() {
+    print_warning "This removes wp-local-dev's containers, volumes, and built images."
+    echo "Site files on disk (sites/, backups/, snapshots/, logs/) are not touched by this step."
+    read -p "Continue? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "Cancelled."
+        return
+    fi
+    docker compose down -v --rmi local
+    print_info "Containers, volumes, and images removed."
+
+    for bin_dir in "$HOME/.local/bin" "/usr/local/bin"; do
+        link="${bin_dir}/wpdev"
+        if [ -L "$link" ] && [ "$(readlink -f "$link")" = "${SCRIPT_DIR}/wpdev" ]; then
+            rm -f "$link"
+            print_info "Removed symlink ${link}"
+        fi
+    done
+
+    echo
+    echo "Everything above this line is done. What's left is this directory itself:"
+    echo "  ${SCRIPT_DIR}"
+    echo "including every site's files, database dumps, and snapshots -- there is no undo for this part."
+    read -p "Delete it too? Type DELETE to confirm, anything else to keep it: " confirm2
+    if [ "$confirm2" = "DELETE" ]; then
+        target="$SCRIPT_DIR"
+        cd /
+        rm -rf "$target"
+        echo "wp-local-dev fully removed."
+    else
+        print_info "Directory kept. Remove it yourself anytime with: rm -rf ${SCRIPT_DIR}"
     fi
 }
 
@@ -1475,6 +1521,7 @@ case "${1:-help}" in
     install-mkcert) cmd_install_mkcert ;;
     clean) cmd_clean ;;
     clean-all) cmd_clean_all ;;
+    uninstall) cmd_uninstall ;;
     add) cmd_add ;;
     remove) cmd_remove "$2" ;;
     clone) cmd_clone "$2" "$3" ;;

@@ -47,6 +47,25 @@ another machine needs that last line again. If you'd rather not touch
 `~/.local/bin`, every command below also works as `./wpdev <command>` from
 inside this folder — no difference in behavior, just typing.
 
+## Uninstalling
+
+```bash
+wpdev uninstall
+```
+
+Three separately-confirmed stages, each safe to stop after:
+
+1. Stops and removes containers, volumes, and the `wp-local-dev-php8x`
+   images built from this repo (`docker compose down -v --rmi local`) —
+   asks `yes`/`no` first, since this deletes every site's database.
+2. Removes the `wpdev` symlink from `~/.local/bin` or `/usr/local/bin` —
+   only if it actually points at this checkout, so it never touches a
+   symlink belonging to some other project.
+3. Optionally deletes this entire directory — every site's files, logs,
+   snapshots, and backups. Requires typing `DELETE`, not just `yes`, since
+   unlike the first two steps there's no undo. Decline and the directory
+   is just left in place for you to remove manually later.
+
 ## Getting started
 
 ```bash
@@ -121,6 +140,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
 | `wpdev clean` | Remove containers (keeps data) |
 | `wpdev clean-all` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
+| `wpdev uninstall` | Remove containers/volumes/images + the `wpdev` symlink, then optionally this whole directory (see below) |
 | `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version) |
 | `wpdev remove <name>` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
 | `wpdev clone <src> <new>` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
