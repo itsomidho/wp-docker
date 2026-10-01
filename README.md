@@ -10,26 +10,42 @@ PHP version (8.1–8.4) at creation time. Everything is driven by one command,
 - Docker (20.10+) and Docker Compose (2.0+)
 - [mkcert](https://github.com/FiloSottile/mkcert) for trusted local SSL — install with `wpdev install-mkcert` (see below)
 
-## One-time setup: putting `wpdev` on your PATH
-
-The command lives in this repo as the `wpdev` script. To type `wpdev up`
-instead of `./wpdev up` from any directory, symlink it into `~/.local/bin`
-(already on `PATH` on most Linux setups, including this one):
+## Installation
 
 ```bash
-ln -sf "$(pwd)/wpdev" ~/.local/bin/wpdev
+curl -fsSL https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/install.sh | bash
+# or: wget -qO- https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/install.sh | bash
 ```
 
-Run that once per machine — it's just a symlink, not tracked by git, so a
-fresh `git clone` on another machine needs it again. If you'd rather not
-touch `~/.local/bin`, every command below also works as `./wpdev <command>`
-from inside this folder — no difference in behavior, just typing.
+[`install.sh`](install.sh) is worth a skim before piping it into a shell —
+it's short. It clones this repo into `~/wp-local-dev` (override with
+`WP_LOCAL_DEV_DIR=/some/path`), copies `.env.example` to `.env`, and
+symlinks `wpdev` onto `~/.local/bin`. No `sudo`, no package installs — it
+doesn't touch anything outside the clone and that one symlink. Re-running
+it is safe: it detects an existing checkout and leaves `.env` alone rather
+than clobbering either.
 
 Check it worked:
 
 ```bash
 wpdev help
 ```
+
+### Manual install
+
+Prefer to clone it yourself:
+
+```bash
+git clone https://github.com/itsomidho/wp-local-dev.git
+cd wp-local-dev
+cp .env.example .env
+ln -sf "$(pwd)/wpdev" ~/.local/bin/wpdev   # so `wpdev` works from any directory
+```
+
+The symlink is just a symlink, not tracked by git, so a fresh clone on
+another machine needs that last line again. If you'd rather not touch
+`~/.local/bin`, every command below also works as `./wpdev <command>` from
+inside this folder — no difference in behavior, just typing.
 
 ## Getting started
 
