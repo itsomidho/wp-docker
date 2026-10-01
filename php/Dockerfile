@@ -12,6 +12,12 @@ ENV PHP_VERSION=${PHP_VERSION}
 
 COPY --chmod=0755 php/install-php-extensions /usr/local/bin/install-php-extensions
 
+# apt-get update first: install-php-extensions doesn't reliably run it itself,
+# and the wordpress:phpX-fpm base image is a floating tag — it moved to a
+# newer Debian release (trixie) upstream since this was last built, so an
+# apt cache baked into an older pull of the same tag can 404 on redis's
+# optional compression deps (libzstd-dev, liblz4-dev) without this.
+RUN apt-get update
 RUN install-php-extensions xdebug redis
 
 # msmtp: relays PHP's mail() (what wp_mail() uses by default) to the shared
