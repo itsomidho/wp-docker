@@ -646,6 +646,21 @@ site_domains() {
     done
 }
 
+# A freshly-created MySQL container (first-ever `up`, or any CI run, which
+# is always a cold start) takes a few seconds to accept connections after
+# `docker compose up` returns -- the container exists and is "Started" well
+# before mysqld inside it is actually ready. Without this wait, the CREATE
+# DATABASE step right after can fail outright against a cold MySQL, which
+# never showed up testing by hand (this machine's MySQL was always already
+# warm) and was only caught by the CI smoke test's first real run.
+wait_for_mysql() {
+    for _ in $(seq 1 30); do
+        docker compose exec -T mysql mysqladmin ping -uroot -p"$DB_ROOT_PASSWORD" --silent </dev/null >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    print_error "MySQL did not become ready within 30 seconds."
+}
+
 # "8.3" -> "php83" — the compose service/container name for a PHP version.
 php_slug() { echo "php${1//./}"; }
 
@@ -937,6 +952,7 @@ cmd_clone() {
 
     print_step "1/8 Starting MySQL + PHP (${php_svc})..."
     docker compose up -d mysql "$php_svc" >/dev/null
+    wait_for_mysql
     print_info "MySQL and PHP are up"
 
     print_step "2/8 Copying WordPress files..."
@@ -1335,6 +1351,7 @@ cmd_add() {
     #    once its config and cert exist.
     print_step "1/8 Starting MySQL + ${php_svc} + Redis..."
     docker compose up -d mysql "$php_svc" redis >/dev/null
+    wait_for_mysql
     print_info "MySQL, PHP and Redis are up"
 
     # 2. Nginx configuration — one file, immediately served (no enable step)
