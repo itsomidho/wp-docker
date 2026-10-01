@@ -83,6 +83,7 @@ show_help() {
     echo "  up                        Start all containers"
     echo "  down                      Stop all containers"
     echo "  restart                   Restart all containers"
+    echo "  update                    git pull, then rebuild + recreate all containers"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  logs [service]            Tail logs (all services, or one)"
@@ -128,6 +129,50 @@ cmd_up() {
 
 cmd_down() { docker compose down; }
 cmd_restart() { docker compose restart; }
+
+# Pull the latest wp-local-dev, then rebuild + fully recreate every
+# container. The rebuild picks up Dockerfile changes (anything baked into
+# the image, like php/crontab); --force-recreate is there because a plain
+# `up -d` only restarts a container whose *compose service config* changed
+# -- it has no way to know a bind-mounted file's *content* changed (e.g.
+# nginx.conf, php/xdebug.ini), so without this, a pulled config fix can
+# silently sit on disk unapplied until something else happens to restart
+# that container. Discovered the hard way this session with exactly that
+# class of bug (a stale bind mount after an in-place file edit).
+cmd_update() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't update. Re-clone from https://github.com/itsomidho/wp-local-dev."
+
+    if [ -n "$(git status --porcelain)" ]; then
+        print_error "You have uncommitted changes -- commit or stash them first, then run 'wpdev update' again."
+    fi
+
+    print_info "Fetching origin..."
+    git fetch origin
+
+    local_rev="$(git rev-parse HEAD)"
+    remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+
+    if [ "$local_rev" = "$remote_rev" ]; then
+        print_info "Already up to date."
+        return
+    fi
+
+    # --ff-only: never auto-merge or rewrite local commits. If history has
+    # diverged, this fails loudly instead of guessing what you want.
+    if ! git pull --ff-only; then
+        print_error "Can't fast-forward -- your branch has local commits origin doesn't have. Resolve manually (e.g. git rebase origin/main), then run 'wpdev update' again."
+    fi
+
+    echo
+    echo "Updated:"
+    git log --oneline "${local_rev}..HEAD"
+    echo
+
+    print_info "Rebuilding images and recreating containers to apply changes..."
+    docker compose build
+    docker compose up -d --force-recreate
+    print_info "Update complete."
+}
 cmd_status() {
     docker compose ps
     echo ""
@@ -1508,6 +1553,7 @@ case "${1:-help}" in
     up) cmd_up ;;
     down) cmd_down ;;
     restart) cmd_restart ;;
+    update) cmd_update ;;
     status) cmd_status ;;
     doctor) cmd_doctor ;;
     logs) cmd_logs "$2" ;;

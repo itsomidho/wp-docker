@@ -66,6 +66,28 @@ Three separately-confirmed stages, each safe to stop after:
    unlike the first two steps there's no undo. Decline and the directory
    is just left in place for you to remove manually later.
 
+## Updating
+
+```bash
+wpdev update
+```
+
+`git pull --ff-only`, then `docker compose build && docker compose up -d
+--force-recreate`. A few deliberate choices:
+
+- Refuses to run at all if you have uncommitted local changes — commit or
+  stash first.
+- Fast-forward only, never an auto-merge: if your branch has local commits
+  origin doesn't have, it fails loudly and tells you to rebase rather than
+  guessing what you want.
+- Always rebuilds and force-recreates every container, even for a change
+  that looks docs-only. A plain `docker compose up -d` only restarts a
+  container whose *compose service config* changed — it has no way to
+  notice a bind-mounted file's *content* changed (`nginx.conf`,
+  `php/xdebug.ini`, etc.), so a pulled fix could otherwise sit on disk
+  unapplied until something else happened to restart that container.
+  Site data isn't touched either way — only the stack's own containers.
+
 ## Getting started
 
 ```bash
@@ -127,6 +149,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev up` | Start all containers |
 | `wpdev down` | Stop all containers |
 | `wpdev restart` | Restart all containers |
+| `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
 | `wpdev status` | Container status, plus a per-site table: reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
