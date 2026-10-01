@@ -653,9 +653,16 @@ site_domains() {
 # DATABASE step right after can fail outright against a cold MySQL, which
 # never showed up testing by hand (this machine's MySQL was always already
 # warm) and was only caught by the CI smoke test's first real run.
+#
+# -h127.0.0.1 forces a TCP connection, not a Unix socket -- confirmed by
+# direct reproduction that mysqld's own bootstrap phase (which sets the
+# root password and runs init scripts, before the real server starts)
+# listens on the socket but not TCP, so a socket-based ping here can
+# report "ready" during a ~5s window where the server is about to shut
+# down and restart, right before the CREATE DATABASE step would run.
 wait_for_mysql() {
     for _ in $(seq 1 30); do
-        docker compose exec -T mysql mysqladmin ping -uroot -p"$DB_ROOT_PASSWORD" --silent </dev/null >/dev/null 2>&1 && return 0
+        docker compose exec -T mysql mysqladmin ping -h127.0.0.1 -uroot -p"$DB_ROOT_PASSWORD" --silent </dev/null >/dev/null 2>&1 && return 0
         sleep 1
     done
     print_error "MySQL did not become ready within 30 seconds."
