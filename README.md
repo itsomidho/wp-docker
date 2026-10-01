@@ -298,7 +298,7 @@ Xdebug is installed but only attaches on demand
 (`xdebug.start_with_request=trigger` in `php/xdebug.ini`), so normal page
 loads aren't slowed down. Trigger it per-request with the "Xdebug helper"
 browser extension, or `?XDEBUG_TRIGGER=1`. VS Code config is in
-`.vscode/launch.json` ("Listen for Xdebug (wp-docker)"), listening on 9003.
+`.vscode/launch.json` ("Listen for Xdebug (wp-local-dev)"), listening on 9003.
 
 ## Redis object cache
 
@@ -397,7 +397,7 @@ dev machine; worth remembering if this box is ever shared or exposed.
 ## Project structure
 
 ```
-wp-docker/
+wp-local-dev/
 ├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
