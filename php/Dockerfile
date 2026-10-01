@@ -1,4 +1,14 @@
-FROM wordpress:php8.2-fpm
+# Which WordPress PHP-FPM image to build — set per service in
+# docker-compose.yml (one service per supported PHP version).
+ARG PHP_VERSION=8.2
+FROM wordpress:php${PHP_VERSION}-fpm
+
+# Re-declare after FROM (build args from before FROM don't carry over) so
+# wp-cron-runner.sh can read its own container's version via $PHP_VERSION —
+# that's how it knows which sites are actually its to run, not just every
+# site on the shared filesystem.
+ARG PHP_VERSION
+ENV PHP_VERSION=${PHP_VERSION}
 
 COPY --chmod=0755 php/install-php-extensions /usr/local/bin/install-php-extensions
 

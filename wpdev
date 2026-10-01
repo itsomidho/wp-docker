@@ -5,7 +5,7 @@
 # Stack lifecycle:
 #   wpdev up | down | restart | status | logs [service]
 #   wpdev doctor              Proactive health check — CA trust, orphan containers, per-site DB sanity
-#   wpdev shell php|db|nginx|redis
+#   wpdev shell php[ version]|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
 #   wpdev portainer           Open Portainer in the browser (Docker container/image management)
@@ -29,10 +29,13 @@
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
-# `add` does the whole thing:
-#   1. Ensure MySQL + PHP + Redis are up (needed for the steps below)
-#   2. Create the Nginx vhost config in nginx/sites/
-#   3. Download WordPress into sites/<name>
+# `add` prompts for a domain and a PHP version (default 8.2; see
+# SUPPORTED_PHP_VERSIONS below — one docker-compose service per version,
+# php81/php82/php83/php84, so each site genuinely runs its own PHP), then
+# does the whole thing:
+#   1. Ensure MySQL + the chosen PHP version + Redis are up
+#   2. Create the Nginx vhost config in nginx/sites/, pointed at that PHP version
+#   3. Download WordPress into sites/<name>, save .php-version there
 #   4. Create a dedicated database + user for the site
 #   5. Generate wp-config.php via WP-CLI (includes Redis object cache config)
 #   6. Generate an SSL certificate with mkcert
@@ -40,7 +43,8 @@
 #   8. Install + activate the redis-cache plugin, enable the object cache
 #   9. Reload Nginx, offer to add the /etc/hosts entry
 #
-# Safe to re-run: every step in `add` is skipped if its output already exists.
+# Safe to re-run: every step in `add` is skipped if its output already
+# exists — including the PHP version prompt itself, once .php-version exists.
 
 set -e
 
@@ -55,6 +59,13 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+# One docker-compose service per version (php81/php82/php83/php84) — see
+# docker-compose.yml. Sites pick a version at `wpdev add` time; it's saved to
+# sites/<name>/.php-version. DEFAULT_PHP_VERSION is what a site gets if it
+# predates multi-PHP support (no marker file) or the prompt is left blank.
+SUPPORTED_PHP_VERSIONS="8.1 8.2 8.3 8.4"
+DEFAULT_PHP_VERSION="8.2"
 
 print_info() { echo -e "${GREEN}✓${NC} $1"; }
 print_step() { echo -e "${GREEN}[STEP]${NC} $1"; }
@@ -75,7 +86,7 @@ show_help() {
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  logs [service]            Tail logs (all services, or one)"
-    echo "  shell php|db|nginx|redis  Shell into a container"
+    echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
     echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
@@ -87,7 +98,7 @@ show_help() {
     echo "  clean-all                 Remove containers + volumes (⚠ deletes data)"
     echo ""
     echo "Sites:"
-    echo "  add                       Provision a new WordPress site"
+    echo "  add                       Provision a new WordPress site (prompts for domain + PHP version)"
     echo "  remove <name>             Delete a site: WP files, DB, Nginx config, SSL cert, logs"
     echo "  clone <src> <new>         Duplicate a site (files + DB) under a new domain, URLs re-pointed"
     echo "  snapshot <site> [label]   Save a files+DB snapshot of a site"
@@ -139,14 +150,15 @@ cmd_status() {
     # never die on the thing it's trying to report as down.
     mysql_up=0
     if docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then mysql_up=1; fi
-    php_up=0
-    if docker compose exec -T php true </dev/null >/dev/null 2>&1; then php_up=1; fi
 
-    printf "%-28s %-6s %-10s %s\n" "DOMAIN" "HTTP" "DATABASE" "CACHE"
+    printf "%-28s %-6s %-6s %-10s %s\n" "DOMAIN" "PHP" "HTTP" "DATABASE" "CACHE"
     for domain in $domains; do
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         config="sites/${site_name}/wp-config.php"
+        php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)"
+        [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+        php_svc="$(php_slug "$php_version")"
 
         # --noproxy/--resolve: check the site regardless of a shell-level
         # http_proxy (which would otherwise silently misroute this to some
@@ -170,12 +182,12 @@ cmd_status() {
         fi
 
         cache_status="n/a"
-        if [ "$php_up" -eq 1 ] && [ -f "$config" ]; then
-            cache_status="$(docker compose exec -T php wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
+        if [ -f "$config" ] && docker compose exec -T "$php_svc" true </dev/null >/dev/null 2>&1; then
+            cache_status="$(docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
             [ -z "$cache_status" ] && cache_status="off"
         fi
 
-        printf "%-28s %-6s %-10s %s\n" "$domain" "$http_code" "$db_status" "$cache_status"
+        printf "%-28s %-6s %-6s %-10s %s\n" "$domain" "$php_version" "$http_code" "$db_status" "$cache_status"
     done
 }
 
@@ -208,7 +220,10 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
-    expected_containers="wp-mysql wp-php wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer"
+    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer"
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        expected_containers="$expected_containers wp-$(php_slug "$v")"
+    done
     for c in $expected_containers; do
         state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
         if [ "$state" = "running" ]; then
@@ -344,12 +359,21 @@ cmd_logs() {
 
 cmd_shell() {
     case "$1" in
-        php) docker exec -it wp-php sh ;;
+        php)
+            version="${2:-$DEFAULT_PHP_VERSION}"
+            case " $SUPPORTED_PHP_VERSIONS " in
+                *" $version "*) ;;
+                *) print_error "Unknown PHP version '${version}'. Supported: $SUPPORTED_PHP_VERSIONS" ;;
+            esac
+            docker exec -it "wp-$(php_slug "$version")" sh
+            ;;
         db) docker exec -it wp-mysql bash ;;
         nginx) docker exec -it wp-nginx sh ;;
         redis) docker exec -it wp-redis redis-cli ;;
         *)
-            print_warning "Usage: wpdev shell php|db|nginx|redis"
+            print_warning "Usage: wpdev shell php [version]|db|nginx|redis"
+            echo "  wpdev shell php          # default version ($DEFAULT_PHP_VERSION)"
+            echo "  wpdev shell php 8.4      # a specific version"
             exit 1
             ;;
     esac
@@ -531,6 +555,21 @@ site_domains() {
     done
 }
 
+# "8.3" -> "php83" — the compose service/container name for a PHP version.
+php_slug() { echo "php${1//./}"; }
+
+# The compose service (php81/php82/php83/php84) that actually serves a given
+# site, based on sites/<name>/.php-version. Falls back to the default version
+# for sites that predate multi-PHP support (no marker file) — which is
+# exactly the version their Nginx vhost's literal `php:9000` already points
+# at via the alias on php82, so this stays consistent with reality without
+# needing every pre-existing site retrofitted.
+site_php_service() {
+    version="$(cat "sites/${1}/.php-version" 2>/dev/null)"
+    [ -z "$version" ] && version="$DEFAULT_PHP_VERSION"
+    php_slug "$version"
+}
+
 # Snapshot IDs sort lexically = chronologically, since they start with
 # YYYYMMDD_HHMMSS.
 site_snapshots() {
@@ -554,7 +593,9 @@ cmd_list() {
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         if [ -d "sites/${site_name}" ]; then
-            wp_status="provisioned"
+            php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)"
+            [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+            wp_status="provisioned, php ${php_version}"
         else
             wp_status="no site files found (expected sites/${site_name})"
         fi
@@ -594,7 +635,11 @@ cmd_creds() {
         return 1
     fi
 
+    php_version="$(cat "$dir/.php-version" 2>/dev/null)"
+    [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+
     echo "Site: $site"
+    echo "  PHP:       ${php_version} ($(php_slug "$php_version"))"
     if [ -f "$dir/.admin-password" ]; then
         echo "  wp-admin:  admin / $(cat "$dir/.admin-password")"
     else
@@ -615,7 +660,7 @@ cmd_wp() {
         return 1
     fi
     shift
-    docker compose exec -T php wp --path="/var/www/${site}" --allow-root "$@"
+    docker compose exec -T "$(site_php_service "$site")" wp --path="/var/www/${site}" --allow-root "$@"
 }
 
 cmd_remove() {
@@ -635,6 +680,8 @@ cmd_remove() {
     if [ ! -f "nginx/sites/${domain}.conf" ] && [ ! -d "sites/${site_name}" ]; then
         print_error "No such site: ${domain} (checked nginx/sites/${domain}.conf and sites/${site_name}/)"
     fi
+
+    php_svc="$(site_php_service "$site_name")"
 
     # Read the real DB_NAME/DB_USER from wp-config.php when available — same
     # principle as clone/doctor/adminer: don't guess wp_<slug>, since sites
@@ -708,10 +755,10 @@ cmd_remove() {
     # WordPress files — written by the container (often as www-data/root), so
     # delete via the php container to sidestep host permission mismatches.
     if [ -d "sites/${site_name}" ]; then
-        if docker compose exec -T php true </dev/null >/dev/null 2>&1; then
-            docker compose exec -T php rm -rf "/var/www/${site_name}" </dev/null
+        if docker compose exec -T "$php_svc" true </dev/null >/dev/null 2>&1; then
+            docker compose exec -T "$php_svc" rm -rf "/var/www/${site_name}" </dev/null
         elif ! rm -rf "sites/${site_name}" 2>/dev/null; then
-            print_warning "Could not remove sites/${site_name} (permission denied and php container isn't running). Run 'wpdev up' and retry, or: sudo rm -rf sites/${site_name}"
+            print_warning "Could not remove sites/${site_name} (permission denied and ${php_svc} container isn't running). Run 'wpdev up' and retry, or: sudo rm -rf sites/${site_name}"
         fi
         [ -d "sites/${site_name}" ] || print_info "Removed sites/${site_name}"
     fi
@@ -762,9 +809,15 @@ cmd_clone() {
         print_error "sites/${new_name} or nginx/sites/${new_domain}.conf already exists — run 'wpdev remove ${new_name}' first, or pick a different name."
     fi
 
+    # The clone inherits the source's PHP version — .php-version travels
+    # along with everything else `cp -a` copies below, so this is also just
+    # what site_php_service will resolve to for the clone afterward.
+    php_svc="$(site_php_service "$source_name")"
+
     echo "This will clone:"
     echo "  sites/${source_name}/  ->  sites/${new_name}/  (files + database)"
     echo "  New domain: https://${new_domain}"
+    echo "  PHP version: $(cat "sites/${source_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (same as source)"
     echo "  Admin login will be the same as ${source_domain} (it's a copy of that database)."
     echo ""
     read -p "Continue? (y/n): " confirm
@@ -791,12 +844,12 @@ cmd_clone() {
     new_db_user="wp_${db_slug}"
     new_db_pass="$(openssl rand -hex 16)"
 
-    print_step "1/8 Starting MySQL + PHP..."
-    docker compose up -d mysql php >/dev/null
+    print_step "1/8 Starting MySQL + PHP (${php_svc})..."
+    docker compose up -d mysql "$php_svc" >/dev/null
     print_info "MySQL and PHP are up"
 
     print_step "2/8 Copying WordPress files..."
-    docker compose exec -T php cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
+    docker compose exec -T "$php_svc" cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
     rm -f "sites/${new_name}/.admin-password" "sites/${new_name}/.db-password"
     [ -f "sites/${source_name}/.admin-password" ] && cp "sites/${source_name}/.admin-password" "sites/${new_name}/.admin-password"
     print_info "Files copied to sites/${new_name}"
@@ -806,6 +859,7 @@ cmd_clone() {
     sed "s/DOMAIN/$new_domain/g" nginx/sites/site.conf.template > "nginx/sites/${new_domain}.conf"
     sed -i "s|/var/www/SITE_NAME|/var/www/$new_name|g" "nginx/sites/${new_domain}.conf"
     sed -i "s/SITE_NAME/$new_name/g" "nginx/sites/${new_domain}.conf"
+    sed -i "s/PHP_UPSTREAM/$php_svc/g" "nginx/sites/${new_domain}.conf"
     print_info "Created nginx/sites/${new_domain}.conf"
 
     print_step "4/8 Cloning database..."
@@ -824,13 +878,13 @@ cmd_clone() {
     print_step "5/8 Rewriting wp-config.php for the clone..."
     # wp config set (not sed) so it works regardless of the source's file
     # layout/formatting, and correctly adds constants that aren't already there.
-    docker compose exec -T php wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set WP_HOME "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set WP_SITEURL "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set WP_HOME "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set WP_SITEURL "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     print_info "wp-config.php updated"
 
     print_step "6/8 Generating SSL certificate..."
@@ -846,11 +900,11 @@ cmd_clone() {
     fi
 
     print_step "7/8 Re-pointing URLs and enabling object cache..."
-    docker compose exec -T php wp search-replace "https://${source_domain}" "https://${new_domain}" \
+    docker compose exec -T "$php_svc" wp search-replace "https://${source_domain}" "https://${new_domain}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp search-replace "${source_domain}" "${new_domain}" \
+    docker compose exec -T "$php_svc" wp search-replace "${source_domain}" "${new_domain}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
-    docker compose exec -T php wp redis enable --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+    docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     print_info "URLs re-pointed, object cache enabled"
 
     print_step "8/8 Reloading Nginx..."
@@ -863,6 +917,7 @@ cmd_clone() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo -e "  Site:        ${GREEN}https://${new_domain}${NC}"
+    echo "  PHP version: $(cat "sites/${new_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (${php_svc})"
     echo "  Admin login: same as ${source_domain} (wpdev creds ${source_name})"
     echo "  Database:    ${new_db_name} / ${new_db_user} (password in sites/${new_name}/.db-password)"
     echo ""
@@ -923,7 +978,7 @@ cmd_snapshot() {
     print_info "Database dumped ($(du -h "$snap_dir/db.sql.gz" | cut -f1))"
 
     print_step "2/2 Archiving files..."
-    docker compose exec -T php tar -czf - -C /var/www "${site_name}" </dev/null > "$snap_dir/files.tar.gz"
+    docker compose exec -T "$(site_php_service "$site_name")" tar -czf - -C /var/www "${site_name}" </dev/null > "$snap_dir/files.tar.gz"
     print_info "Files archived ($(du -h "$snap_dir/files.tar.gz" | cut -f1))"
 
     echo ""
@@ -999,8 +1054,9 @@ cmd_restore() {
     print_info "Database restored"
 
     print_step "2/3 Restoring files..."
-    docker compose exec -T php sh -c "rm -rf /var/www/${site_name}" </dev/null
-    docker compose exec -T php tar -xzf - -C /var/www < "$snap_dir/files.tar.gz"
+    php_svc="$(site_php_service "$site_name")"
+    docker compose exec -T "$php_svc" sh -c "rm -rf /var/www/${site_name}" </dev/null
+    docker compose exec -T "$php_svc" tar -xzf - -C /var/www < "$snap_dir/files.tar.gz"
     print_info "Files restored"
 
     print_step "3/3 Flushing this site's cache..."
@@ -1154,10 +1210,28 @@ cmd_add() {
     db_name="wp_${db_slug}"
     db_user="wp_${db_slug}"
 
+    # PHP version — only asked for a genuinely new site; re-running `add` on
+    # one that already has a .php-version marker reuses it silently, same as
+    # every other idempotent step below (nginx conf, wp-config, cert). This
+    # isn't how you'd change an existing site's PHP version — no config
+    # regeneration happens here, so changing it later needs manual follow-up.
+    if [ -f "sites/${site_name}/.php-version" ]; then
+        php_version="$(cat "sites/${site_name}/.php-version")"
+    else
+        read -p "PHP version [$DEFAULT_PHP_VERSION] (choices: $SUPPORTED_PHP_VERSIONS): " php_version
+        php_version="${php_version:-$DEFAULT_PHP_VERSION}"
+        case " $SUPPORTED_PHP_VERSIONS " in
+            *" $php_version "*) ;;
+            *) print_error "Unknown PHP version '${php_version}'. Supported: $SUPPORTED_PHP_VERSIONS" ;;
+        esac
+    fi
+    php_svc="$(php_slug "$php_version")"
+
     echo ""
     echo "Domain:          $domain"
     echo "Site directory:  sites/$site_name"
     echo "Database:        $db_name"
+    echo "PHP version:     $php_version ($php_svc)"
     echo ""
     read -p "Continue? (y/n): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -1168,8 +1242,8 @@ cmd_add() {
     # 1. Bring up MySQL + PHP + Redis (needed for wp-cli/db/cache steps below;
     #    harmless if already running). Nginx is brought up/reloaded later
     #    once its config and cert exist.
-    print_step "1/8 Starting MySQL + PHP + Redis..."
-    docker compose up -d mysql php redis >/dev/null
+    print_step "1/8 Starting MySQL + ${php_svc} + Redis..."
+    docker compose up -d mysql "$php_svc" redis >/dev/null
     print_info "MySQL, PHP and Redis are up"
 
     # 2. Nginx configuration — one file, immediately served (no enable step)
@@ -1186,14 +1260,16 @@ cmd_add() {
         sed "s/DOMAIN/$domain/g" nginx/sites/site.conf.template > "nginx/sites/${domain}.conf"
         sed -i "s|/var/www/SITE_NAME|/var/www/$site_name|g" "nginx/sites/${domain}.conf"
         sed -i "s/SITE_NAME/$site_name/g" "nginx/sites/${domain}.conf"
+        sed -i "s/PHP_UPSTREAM/$php_svc/g" "nginx/sites/${domain}.conf"
         print_info "Created nginx/sites/${domain}.conf"
     fi
 
     # 3. Download WordPress
     print_step "3/8 Downloading WordPress..."
     mkdir -p "sites/$site_name"
+    echo "$php_version" > "sites/${site_name}/.php-version"
 
-    if [ "$(ls -A "sites/$site_name" 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
+    if [ "$(ls -A "sites/$site_name" 2>/dev/null | grep -v '^\.gitkeep$' | grep -v '^\.php-version$')" ]; then
         print_warning "Directory sites/$site_name is not empty. Skipping WordPress download."
         preexisting_site=1
     else
@@ -1252,7 +1328,7 @@ cmd_add() {
     if [ -f "sites/${site_name}/wp-config.php" ]; then
         print_info "wp-config.php already exists. Skipping."
     else
-        docker compose exec -T php wp config create \
+        docker compose exec -T "$php_svc" wp config create \
             --path="/var/www/${site_name}" \
             --dbname="${db_name}" \
             --dbuser="${db_user}" \
@@ -1297,7 +1373,7 @@ PHP
     # 7. WordPress install (skip the browser installer entirely)
     print_step "7/8 Installing WordPress..."
     admin_pass_file="sites/${site_name}/.admin-password"
-    if docker compose exec -T php wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    if docker compose exec -T "$php_svc" wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "WordPress already installed. Skipping."
     else
         if [ -f "$admin_pass_file" ]; then
@@ -1307,7 +1383,7 @@ PHP
             echo "$admin_pass" > "$admin_pass_file"
         fi
 
-        docker compose exec -T php wp core install \
+        docker compose exec -T "$php_svc" wp core install \
             --path="/var/www/${site_name}" \
             --url="https://${domain}" \
             --title="${domain}" \
@@ -1326,16 +1402,16 @@ PHP
     # `redis enable` is a warning, not a hard stop: the site works fine
     # without an object cache, just slower.
     print_step "8/8 Enabling Redis object cache..."
-    if docker compose exec -T php wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    if docker compose exec -T "$php_svc" wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin already installed"
     else
-        docker compose exec -T php wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+        docker compose exec -T "$php_svc" wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
         print_info "redis-cache plugin installed and activated"
     fi
 
-    if docker compose exec -T php wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
+    if docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
         print_info "Object cache already enabled"
-    elif docker compose exec -T php wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    elif docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "Object cache enabled"
     else
         print_warning "Could not enable the Redis object cache — site works fine without it."
@@ -1353,6 +1429,7 @@ PHP
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo -e "  Site:        ${GREEN}https://${domain}${NC}"
+    echo "  PHP version: ${php_version} (${php_svc})"
     echo -e "  Admin login: ${GREEN}https://${domain}/wp-admin${NC}  (admin / ${admin_pass})"
     echo "  Database:    ${db_name} / ${db_user} (password in sites/${site_name}/.db-password)"
     echo "  Object cache: Redis (check with: wpdev wp ${site_name} redis status)"

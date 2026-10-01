@@ -1,9 +1,9 @@
 # WordPress Docker Multi-Site — Local Development
 
 A Docker-based environment for running multiple WordPress sites locally with
-Nginx, a single shared PHP-FPM pool, MySQL, Redis (object cache), and
-Adminer. Everything is driven by one command, `wpdev`. Adding a site is one
-call and does not touch `docker-compose.yml`.
+Nginx, MySQL, Redis (object cache), and Adminer — each site picks its own
+PHP version (8.1–8.4) at creation time. Everything is driven by one command,
+`wpdev`. Adding a site is one call and does not touch `docker-compose.yml`.
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ wpdev help
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php, redis, mailpit, nginx, adminer, portainer
+wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer
 wpdev add                 # 3. provision your first site
 ```
 
@@ -45,25 +45,29 @@ wpdev add                 # 3. provision your first site
 $ wpdev add
 Enter domain name (e.g., mysite.test): mysite.test
 
+PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.3
+
 Domain:          mysite.test
 Site directory:  sites/mysite
 Database:        wp_mysite
+PHP version:     8.3 (php83)
 
 Continue? (y/n): y
-[STEP] 1/8 Starting MySQL + PHP + Redis...
+[STEP] 1/8 Starting MySQL + php83 + Redis...
 ...
 ✓ mysite.test is ready
 
   Site:        https://mysite.test
+  PHP version: 8.3 (php83)
   Admin login: https://mysite.test/wp-admin  (admin / <generated password>)
 
 Add '127.0.0.1 mysite.test' to /etc/hosts now? (y/n): y
 ```
 
-That one command:
+Press enter at the PHP prompt to take the default (8.2). That one command:
 
-1. Creates the Nginx vhost in `nginx/sites/<domain>.conf`
-2. Downloads WordPress core into `sites/<name>/`
+1. Creates the Nginx vhost in `nginx/sites/<domain>.conf`, pointed at the chosen PHP version
+2. Downloads WordPress core into `sites/<name>/`, and saves the version choice to `sites/<name>/.php-version`
 3. Creates a dedicated MySQL database + user for the site
 4. Generates `wp-config.php` via WP-CLI (Redis + `DISABLE_WP_CRON` included — see below)
 5. Generates an mkcert SSL certificate
@@ -91,7 +95,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev status` | Container status, plus a per-site table: reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
-| `wpdev shell php\|db\|nginx\|redis` | Shell into a container (`redis` opens `redis-cli` directly) |
+| `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
 | `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
@@ -101,7 +105,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
 | `wpdev clean` | Remove containers (keeps data) |
 | `wpdev clean-all` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
-| `wpdev add` | Provision a new site (interactive) |
+| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version) |
 | `wpdev remove <name>` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
 | `wpdev clone <src> <new>` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |
@@ -174,6 +178,51 @@ for you, just tells you the command to run:
   exactly the check that would have caught the incident that led to this
   command existing: a site's `wp-config.php` silently pointing at a
   database that isn't there.
+
+## Multiple PHP versions
+
+Each site genuinely runs its own PHP — not a label, an actual separate
+PHP-FPM container per version. `wpdev add` prompts for one:
+
+```
+PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.4
+```
+
+Press enter for the default (8.2). The choice is saved to
+`sites/<name>/.php-version` and baked into that site's Nginx vhost
+(`fastcgi_pass php84:9000`, etc.) — `docker-compose.yml` runs one service
+per version (`php81`/`php82`/`php83`/`php84`), all sharing the same `sites/`
+directory; which container actually handles a given site is entirely down
+to which one its vhost points at.
+
+```bash
+wpdev shell php 8.4          # shell into a specific version's container
+wpdev list                   # shows each site's PHP version
+wpdev status                 # ditto, in the per-site table
+```
+
+`wpdev clone` carries the source site's PHP version over to the clone
+automatically — it's not re-prompted.
+
+**Cron runs per-version too, correctly.** Each PHP container runs its own
+cron daemon (see "Real WP-Cron" below), and each one only processes sites
+assigned to *its own* version — not every site on the shared filesystem.
+This isn't just tidiness: running a site's scheduled events under the wrong
+PHP interpreter can outright fatal-error on version-specific syntax, which
+is exactly what happened to a real site here while this was being built,
+before the partitioning logic was fixed. Each container reads its own
+version from `/etc/php-version` (written once at container start) — not an
+environment variable, because cron jobs run with a stripped environment
+that never sees Docker's `ENV`, and php-fpm's own master process clears its
+internal environment too, so there's genuinely no env var left to read by
+the time a cron job runs.
+
+**One-time step if you're upgrading from a single shared `php` container**
+(i.e. this repo before multi-PHP support existed): run
+`docker compose restart nginx` once. Nginx resolves upstream hostnames at
+worker startup and caches them — it won't notice the new `php81`–`php84`
+containers exist until restarted, even though existing sites keep working
+unchanged via a `php` network alias on `php82` (the default version).
 
 ## Cloning a site
 
@@ -291,9 +340,10 @@ WordPress's default "cron" isn't a real scheduler — it only checks for due
 events on a page load, so scheduled posts, WooCommerce order processing,
 and plugin maintenance tasks can silently sit unrun on a quiet local site
 with little traffic. Every site `wpdev add` creates gets
-`DISABLE_WP_CRON` set automatically, and a real cron daemon inside the
-shared `php` container runs the actual due events for **every** site, once
-a minute, regardless of whether anyone loads a page:
+`DISABLE_WP_CRON` set automatically, and each PHP container (php81–php84)
+runs its own cron daemon that processes the actual due events for every
+site assigned to *its* version (see "Multiple PHP versions" above), once a
+minute, regardless of whether anyone loads a page:
 
 ```bash
 tail -f logs/cron.log             # watch it run
@@ -308,15 +358,17 @@ queued for who knows how long under the old page-load-triggered pseudo-cron.
 A few things worth knowing if you ever touch `php/crontab` or
 `php/wp-cron-runner.sh`:
 
-- The crontab file is **baked into the image**, not bind-mounted like the
-  other `php/*` configs — Debian's `cron` silently ignores `/etc/cron.d`
-  files that aren't root-owned and non-group-writable, which a bind mount
-  can't guarantee (it inherits the host file's ownership). Changing it
-  needs `docker compose build php`, not just an edit.
+- The crontab file (and `entrypoint.sh`, which writes `/etc/php-version` at
+  startup) are **baked into the image**, not bind-mounted like the other
+  `php/*` configs — Debian's `cron` silently ignores `/etc/cron.d` files
+  that aren't root-owned and non-group-writable, which a bind mount can't
+  guarantee (it inherits the host file's ownership). Changing either needs
+  `docker compose build php81 php82 php83 php84`, not just an edit.
 - `wp-cron-runner.sh` **is** bind-mounted and does pick up edits live in
   principle, but some editors/tools replace-rather-than-modify a file on
   save, which can orphan an already-open bind mount — if a change doesn't
-  seem to take effect, `docker compose restart php` forces a fresh mount.
+  seem to take effect, `docker compose restart php81 php82 php83 php84`
+  forces a fresh mount.
 - The runner is `flock`-guarded against overlapping itself — a slow event
   (a big first-run backlog, or just a slow plugin hook) can take longer
   than cron's one-minute interval, and without the lock, overlapping runs
@@ -346,13 +398,13 @@ dev machine; worth remembering if this box is ever shared or exposed.
 
 ```
 wp-docker/
-├── docker-compose.yml           # mysql, php, redis, mailpit, nginx, adminer, portainer
+├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
 ├── install-mkcert.sh            # one-time mkcert installer, called by `wpdev install-mkcert`
 │
 ├── php/
-│   ├── Dockerfile               # wordpress:php8.2-fpm + xdebug + phpredis + msmtp + cron + wp-cli
+│   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli
 │   ├── xdebug.ini
 │   ├── mail.ini                 # sendmail_path -> msmtp
 │   ├── msmtprc                  # msmtp: relay to mailpit:1025
@@ -369,7 +421,8 @@ wp-docker/
 │
 ├── sites/<name>/                 # WordPress core + wp-content for each site (git-ignored)
 │   ├── .admin-password          # generated by `wpdev add`
-│   └── .db-password
+│   ├── .db-password
+│   └── .php-version             # which PHP container serves this site (see "Multiple PHP versions")
 │
 └── logs/
     ├── nginx/                   # access/error logs, per site

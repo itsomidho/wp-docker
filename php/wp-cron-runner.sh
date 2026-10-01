@@ -17,9 +17,28 @@
 exec 200>/var/run/wp-cron-runner.lock
 flock -n 200 || { echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') previous run still in progress, skipping"; exit 0; }
 
+# Multiple PHP versions each run their own copy of this script in their own
+# container, all sharing the same /var/www — so each must only process sites
+# actually assigned to ITS version (sites/<name>/.php-version). Getting this
+# wrong wouldn't just double-run cron: a site assigned to 8.4 would have its
+# scheduled events executed under 8.1's interpreter instead, which can
+# outright fatal-error on version-specific syntax — confirmed for real while
+# building this (Composer/PHP-version fatal on a real site). Sites with no
+# marker file (predate multi-PHP support) are treated as the default version.
+#
+# Read from /etc/php-version (written by entrypoint.sh at container start),
+# NOT $PHP_VERSION — cron jobs get a stripped environment that never sees
+# Docker's ENV, and php-fpm's own master process clears its environment
+# internally too, so there is no env var to read at all by the time this runs.
+my_version="$(cat /etc/php-version 2>/dev/null)"
+[ -z "$my_version" ] && my_version="8.2"
+
 for config in /var/www/*/wp-config.php; do
     [ -f "$config" ] || continue
     site_dir="$(dirname "$config")"
-    echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') ${site_dir}"
+    site_version="$(cat "${site_dir}/.php-version" 2>/dev/null)"
+    [ -z "$site_version" ] && site_version="8.2"
+    [ "$site_version" = "$my_version" ] || continue
+    echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') ${site_dir} (php${my_version})"
     /usr/local/bin/wp cron event run --due-now --path="$site_dir" --allow-root 2>&1
 done

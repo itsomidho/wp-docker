@@ -75,20 +75,27 @@ services:
     networks:
       - network
 
-  # PHP-FPM (single pool serving multiple sites)
-  php:
+  # PHP-FPM — one service per supported PHP version, so each site can pick
+  # its own at creation time (`wpdev add`). All share the same ./sites, since
+  # which container actually handles a given site is entirely down to which
+  # one its Nginx vhost points at (PHP_UPSTREAM) — Nginx routing decides,
+  # not filesystem access. php82 is the default and carries a `php` network
+  # alias so existing vhosts created before multi-PHP support (which say
+  # `fastcgi_pass php:9000` literally) keep resolving with zero changes.
+  php81: &php-fpm
     build:
       context: .
       dockerfile: php/Dockerfile
       network: host
       args:
+        PHP_VERSION: "8.1"
         # Only set if your network needs a proxy to reach the internet during
         # the build (e.g. to download wp-cli/PECL extensions). Leave HTTP_PROXY
         # unset in .env and these are empty — no proxy is used.
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    container_name: wp-php
+    container_name: wp-php81
     restart: unless-stopped
     volumes:
       - ./sites:/var/www
@@ -103,6 +110,49 @@ services:
       - network
     depends_on:
       - mailpit
+
+  php82:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      args:
+        PHP_VERSION: "8.2"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php82
+    networks:
+      network:
+        aliases:
+          - php
+
+  php83:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      args:
+        PHP_VERSION: "8.3"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php83
+
+  php84:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      args:
+        PHP_VERSION: "8.4"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php84
 
   # Nginx (Shared reverse proxy for all sites)
   nginx:
@@ -119,7 +169,10 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/sites:/etc/nginx/sites
     depends_on:
-      - php
+      - php81
+      - php82
+      - php83
+      - php84
     networks:
       - network
 
