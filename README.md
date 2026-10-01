@@ -217,12 +217,15 @@ that never sees Docker's `ENV`, and php-fpm's own master process clears its
 internal environment too, so there's genuinely no env var left to read by
 the time a cron job runs.
 
-**One-time step if you're upgrading from a single shared `php` container**
-(i.e. this repo before multi-PHP support existed): run
-`docker compose restart nginx` once. Nginx resolves upstream hostnames at
-worker startup and caches them — it won't notice the new `php81`–`php84`
-containers exist until restarted, even though existing sites keep working
-unchanged via a `php` network alias on `php82` (the default version).
+**Nginx re-resolves PHP upstreams dynamically — no manual reload needed.**
+Site configs use `resolver 127.0.0.11 valid=10s ipv6=off;` (Docker's
+embedded DNS) plus `set $upstream_php ...; fastcgi_pass $upstream_php:9000;`
+instead of a bare `fastcgi_pass phpXX:9000;`. A bare hostname is resolved
+once, at worker startup, and cached for the worker's whole life — so
+restarting any `php8x` container (which gets a new IP) caused real,
+intermittent 500s until nginx was reloaded, found the hard way after a
+routine container restart broke a live site mid-session. The `set`
++ `resolver` combo forces a fresh lookup on every request instead.
 
 ## Cloning a site
 
