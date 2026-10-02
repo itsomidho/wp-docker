@@ -60,7 +60,7 @@ directories).
 **fish** — autoloads from this path by filename, no reload needed:
 
 ```bash
-ln -sf "$(pwd)/completions/wpdev.fish" ~/.config/fish/completions/wpdev.fish
+ln -sf "$(pwd)/completions/fish/wpdev.fish" ~/.config/fish/completions/wpdev.fish
 ```
 
 **bash** — source it from `~/.bashrc`, or symlink it (no `.bash` extension)
