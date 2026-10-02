@@ -31,8 +31,17 @@ jobs:
         run: printf 'citest.test\n8.2\ny\nn\n' | ./wpdev add
 
       - name: Site responds over HTTPS
+        # Retries: curl can hit a transient SSL-connect error (exit 35) in
+        # the few seconds right after cert generation + nginx reload --
+        # seen for real in CI once, on a commit that touched nothing but
+        # completions/README, confirming it was a startup race, not a
+        # regression. Same reasoning as wait_for_mysql's retry loop.
         run: |
-          code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/)
+          code=""
+          for i in $(seq 1 10); do
+            code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/ 2>/dev/null) && [ "$code" = "200" ] && break
+            sleep 1
+          done
           echo "HTTP $code"
           [ "$code" = "200" ]
 
@@ -56,7 +65,11 @@ jobs:
         run: |
           printf 'y\nn\n' | ./wpdev clone citest citest-clone
           docker exec wp-nginx nginx -t
-          code=$(curl -sk --resolve citest-clone.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest-clone.test/)
+          code=""
+          for i in $(seq 1 10); do
+            code=$(curl -sk --resolve citest-clone.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest-clone.test/ 2>/dev/null) && [ "$code" = "200" ] && break
+            sleep 1
+          done
           echo "clone HTTP $code"
           [ "$code" = "200" ]
 
@@ -78,8 +91,11 @@ jobs:
           nginx was manually reloaded)
         run: |
           docker compose restart php82
-          sleep 2
-          code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/)
+          code=""
+          for i in $(seq 1 10); do
+            code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/ 2>/dev/null) && [ "$code" = "200" ] && break
+            sleep 1
+          done
           echo "HTTP after php82 restart, no nginx reload: $code"
           [ "$code" = "200" ]
 
