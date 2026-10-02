@@ -74,14 +74,15 @@ echo 'source '"$(pwd)"'/completions/bash/wpdev.bash' >> ~/.bashrc
 `~/.zshrc`, then start a new shell:
 
 ```bash
-echo 'fpath=("'"$(pwd)"'/completions/zsh/wpdev" $fpath)' >> ~/.zshrc
+echo 'fpath=("'"$(pwd)"'/completions/zsh" $fpath)' >> ~/.zshrc
 ```
 
-**zsh (oh-my-zsh)** — symlink the whole directory in as a plugin, then add
-`wpdev` to your `plugins=(...)` line:
+**zsh (oh-my-zsh)** — symlink the directory in as a plugin (the name at
+the destination is what oh-my-zsh reads, not the source directory's own
+name), then add `wpdev` to your `plugins=(...)` line:
 
 ```bash
-ln -sf "$(pwd)/completions/zsh/wpdev" ~/.oh-my-zsh/custom/plugins/wpdev
+ln -sf "$(pwd)/completions/zsh" ~/.oh-my-zsh/custom/plugins/wpdev
 ```
 ```zsh
 plugins=(... wpdev)
