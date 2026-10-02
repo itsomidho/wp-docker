@@ -1,0 +1,131 @@
+server {
+    listen 80;
+    server_name DOMAIN;
+    
+    # Redirect HTTP to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name DOMAIN;
+    client_max_body_size 256M;
+
+    ssl_certificate /etc/nginx/ssl/certs/DOMAIN.pem;
+    ssl_certificate_key /etc/nginx/ssl/private/DOMAIN-key.pem;
+
+    root /var/www/SITE_NAME;
+    index index.php index.html index.htm;
+
+    access_log /var/log/nginx/SITE_NAME_access.log;
+    error_log /var/log/nginx/SITE_NAME_error.log;
+
+    # Security headers
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Main WordPress rewrite logic
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # Full-page cache bypass rules -- the standard WordPress FastCGI cache
+    # recipe (same one WordOps itself uses): never serve a cached page to a
+    # logged-in user, a commenter, or anyone with a password-protected-post
+    # cookie, never cache a POST, admin/login/cron/xmlrpc requests, or
+    # anything with a query string (pagination etc. already works fine
+    # through pretty permalinks without one).
+    set $skip_cache 0;
+    if ($request_method = POST) {
+        set $skip_cache 1;
+    }
+    if ($query_string != "") {
+        set $skip_cache 1;
+    }
+    if ($request_uri ~* "/wp-admin/|/xmlrpc.php|wp-login\.php|wp-cron\.php") {
+        set $skip_cache 1;
+    }
+    if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in") {
+        set $skip_cache 1;
+    }
+
+    # PHP processing
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_index index.php;
+
+        # nginx's add_header inheritance rule: a location that defines its
+        # own add_header stops inheriting the server block's entirely, not
+        # just adds to them -- confirmed the hard way, these four silently
+        # vanished site-wide the moment X-FastCGI-Cache was added below.
+        # Repeating them here is the standard, documented nginx fix.
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        # A variable here (vs. a bare hostname) forces nginx to re-resolve
+        # PHP_UPSTREAM per-request against the resolver below, instead of
+        # caching whatever IP it had at worker startup/reload — otherwise
+        # restarting a phpXX container (which gets a new IP) causes real
+        # 500s until someone remembers to also `nginx -s reload`.
+        set $upstream_php PHP_UPSTREAM;
+        fastcgi_pass $upstream_php:9000;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+        # Add these PHP-specific upload settings
+        fastcgi_param PHP_VALUE "upload_max_filesize=256M \n post_max_size=256M \n memory_limit=512M \n max_execution_time=300";
+        fastcgi_read_timeout 300;
+
+        fastcgi_cache WPCACHE;
+        fastcgi_cache_valid 200 60m;
+        fastcgi_cache_bypass $skip_cache;
+        fastcgi_no_cache $skip_cache;
+        # Visible proof of what happened (HIT/MISS/BYPASS) -- the whole
+        # point of turning this on locally is to actually see cache
+        # behavior, not just trust that it's working.
+        add_header X-FastCGI-Cache $upstream_cache_status;
+    }
+
+    # Deny access to Apache .ht* files (used by Apache)
+    location ~ /\.ht {
+        deny all;
+    }
+
+    # Deny access to xmlrpc.php for security (optional)
+    location = /xmlrpc.php {
+        deny all;
+    }
+
+    # Block PHP execution in uploads for security (optional)
+    location ~* /(?:uploads|files)/.*\.php$ {
+        deny all;
+    }
+
+    # CORS headers for fonts, JS, CSS, SVG
+    location ~* \.(eot|ttf|woff|woff2|otf|js|css|svg)$ {
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods "GET, OPTIONS";
+        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range";
+        add_header Access-Control-Expose-Headers "Content-Length,Content-Range";
+        try_files $uri $uri/ =404;
+    }
+
+    # Explicit MIME type for JS modules
+    location ~* \.m?js$ {
+        add_header Content-Type application/javascript;
+    }
+
+    # Static file cache
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires max;
+        log_not_found off;
+        access_log off;
+    }
+
+    # Hide hidden version control or config files
+    location ~* /\.(git|svn|hg|env|env\.example|DS_Store|vscode|editorconfig) {
+        deny all;
+    }
+}

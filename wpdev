@@ -93,6 +93,8 @@ show_help() {
     echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  reload-nginx              Test and reload Nginx config"
+    echo "  cache <site> on|off       Toggle nginx full-page cache for a site (bypassed when logged in, on POST, wp-admin, etc.)"
+    echo "  cache-purge               Clear the full-page cache (shared across every site that has it enabled)"
     echo "  backup                    mysqldump --all-databases to backups/"
     echo "  restore-all [file]        Replace every database from a backup (defaults to the latest in backups/)"
     echo "  install-mkcert            One-time local CA setup for trusted SSL"
@@ -566,6 +568,77 @@ cmd_mailpit() {
 cmd_reload_nginx() {
     docker exec wp-nginx nginx -t
     docker exec wp-nginx nginx -s reload
+}
+
+# Opt-in nginx FastCGI full-page cache, toggled by regenerating the site's
+# vhost from one of two templates (plain vs. cached) -- the same
+# DOMAIN/SITE_NAME/PHP_UPSTREAM substitution cmd_add already does, just
+# picking a different source template. Lets you catch cache-interaction
+# bugs (stale content, logged-in users seeing anonymous pages, broken
+# cache-busting on form submits) locally before a production box with
+# caching turned on ever sees them.
+cmd_cache() {
+    arg="$1"
+    mode="$2"
+    if [ -z "$arg" ] || [ -z "$mode" ]; then
+        print_warning "Usage: wpdev cache <site-name> <on|off>"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+    case "$mode" in
+        on|off) ;;
+        *) print_error "Mode must be 'on' or 'off', got '${mode}'" ;;
+    esac
+
+    site_name="${arg%.test}"
+    site_name="${site_name//./-}"
+    domain="${site_name}.test"
+
+    if [ ! -f "nginx/sites/${domain}.conf" ]; then
+        print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
+    fi
+
+    php_svc="$(site_php_service "$site_name")"
+    if [ "$mode" = "on" ]; then
+        template="nginx/sites/site.conf.cached.template"
+    else
+        template="nginx/sites/site.conf.template"
+    fi
+
+    sed "s/DOMAIN/$domain/g" "$template" > "nginx/sites/${domain}.conf"
+    sed -i "s|/var/www/SITE_NAME|/var/www/$site_name|g" "nginx/sites/${domain}.conf"
+    sed -i "s/SITE_NAME/$site_name/g" "nginx/sites/${domain}.conf"
+    sed -i "s/PHP_UPSTREAM/$php_svc/g" "nginx/sites/${domain}.conf"
+
+    if [ "$mode" = "on" ]; then
+        touch "sites/${site_name}/.cache"
+    else
+        rm -f "sites/${site_name}/.cache"
+    fi
+
+    if docker exec wp-nginx nginx -t >/dev/null 2>&1; then
+        docker exec wp-nginx nginx -s reload >/dev/null 2>&1
+    else
+        print_error "Generated an invalid nginx config for ${domain} -- run 'docker exec wp-nginx nginx -t' to see why."
+    fi
+
+    if [ "$mode" = "on" ]; then
+        print_info "Full-page cache enabled for ${domain}."
+        echo "Check it: curl -skI https://${domain}/ | grep -i x-fastcgi-cache"
+        echo "(MISS the first request, HIT after -- BYPASS whenever you're logged in,"
+        echo "posting a form, or hitting wp-admin.)"
+    else
+        print_info "Full-page cache disabled for ${domain}."
+    fi
+}
+
+cmd_cache_purge() {
+    if docker compose exec -T nginx true </dev/null >/dev/null 2>&1; then
+        docker compose exec -T nginx sh -c "rm -rf /var/cache/nginx/fastcgi/*" </dev/null 2>/dev/null
+        print_info "Full-page cache purged (shared across every site that has it enabled)."
+    else
+        print_warning "Nginx isn't running -- nothing to purge."
+    fi
 }
 
 cmd_backup() {
@@ -1671,6 +1744,8 @@ case "${1:-help}" in
     portainer) cmd_portainer ;;
     mailpit) cmd_mailpit ;;
     reload-nginx) cmd_reload_nginx ;;
+    cache) cmd_cache "$2" "$3" ;;
+    cache-purge) cmd_cache_purge ;;
     backup) cmd_backup ;;
     restore-all) cmd_restore_all "$2" ;;
     install-mkcert) cmd_install_mkcert ;;

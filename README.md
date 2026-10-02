@@ -200,6 +200,8 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
 | `wpdev mailpit` | Open Mailpit in the browser — every site's outgoing mail, caught |
 | `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
+| `wpdev cache <site> on\|off` | Toggle nginx full-page cache for a site |
+| `wpdev cache-purge` | Clear the full-page cache (shared across every site that has it enabled) |
 | `wpdev backup` | `mysqldump --all-databases` to `backups/` |
 | `wpdev restore-all [file]` | Replace every database from a backup (defaults to the latest in `backups/`) |
 | `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
@@ -435,6 +437,37 @@ wpdev shell redis                # raw redis-cli, e.g. KEYS mysite:*
 Redis has no volume — it's purely a cache, so a restart just means the next
 few page loads repopulate it. `wpdev remove` flushes a site's own keys.
 
+## Full-page cache (nginx FastCGI)
+
+Off by default — Redis above only caches WordPress's own objects/queries;
+this caches entire rendered HTML pages at the nginx level, the same way a
+production box fronted by something like WordOps often does. Useful for
+catching cache-interaction bugs locally (stale content after an edit,
+logged-in users seeing an anonymous-cached page, broken cache-busting on a
+form submit) before they show up somewhere that actually matters.
+
+```bash
+wpdev cache mysite on     # regenerates mysite's nginx vhost with caching added
+wpdev cache mysite off    # regenerates it back to plain (no caching)
+wpdev cache-purge         # clears the cache -- shared across every site
+                           # that has it enabled, not per-site
+```
+
+Bypassed automatically for logged-in users, commenters, password-protected
+posts, `POST` requests, anything with a query string, and `/wp-admin/`,
+`wp-login.php`, `wp-cron.php`, `xmlrpc.php` — the standard WordPress FastCGI
+cache recipe. Check what actually happened on any request:
+
+```bash
+curl -skI https://mysite.test/ | grep -i x-fastcgi-cache
+# MISS the first request, HIT after, BYPASS whenever the rules above apply
+```
+
+A config change (or a stale page from before you last purged) can still
+show up as a `HIT` until you `wpdev cache-purge` — the cache stores the
+whole response including headers, so toggling or editing doesn't
+retroactively fix what's already sitting in it.
+
 ## Mail catching (Mailpit)
 
 Every site's outgoing mail — password resets, WooCommerce order emails,
@@ -535,6 +568,7 @@ wp-local-dev/
 │   ├── nginx.conf
 │   ├── sites/                   # one *.conf per site, served directly — no enable/disable step
 │   │   ├── site.conf.template   # used by `wpdev add`
+│   │   ├── site.conf.cached.template  # used by `wpdev cache <site> on`
 │   │   └── default.conf         # catch-all for unmatched domains
 │   └── ssl/{certs,private}/     # mkcert output
 │

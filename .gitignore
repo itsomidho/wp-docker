@@ -36,6 +36,7 @@ nginx/sites/*
 !nginx/sites/.gitkeep
 !nginx/sites/default.conf
 !nginx/sites/site.conf.template
+!nginx/sites/site.conf.cached.template
 
 # OS files
 .DS_Store

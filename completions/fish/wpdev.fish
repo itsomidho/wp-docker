@@ -60,7 +60,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update status doctor logs shell db adminer portainer mailpit reload-nginx backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help
+set -l __wpdev_cmds up down restart update status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help
 
 complete -c wpdev -f
 
@@ -78,6 +78,8 @@ complete -c wpdev -n "$__wpdev_top" -a adminer -d "Open Adminer in the browser"
 complete -c wpdev -n "$__wpdev_top" -a portainer -d "Open Portainer in the browser"
 complete -c wpdev -n "$__wpdev_top" -a mailpit -d "Open Mailpit in the browser"
 complete -c wpdev -n "$__wpdev_top" -a reload-nginx -d "Test and reload Nginx config"
+complete -c wpdev -n "$__wpdev_top" -a cache -d "Toggle nginx full-page cache for a site"
+complete -c wpdev -n "$__wpdev_top" -a cache-purge -d "Clear the full-page cache"
 complete -c wpdev -n "$__wpdev_top" -a backup -d "mysqldump --all-databases to backups/"
 complete -c wpdev -n "$__wpdev_top" -a restore-all -d "Replace every database from a backup"
 complete -c wpdev -n "$__wpdev_top" -a install-mkcert -d "One-time local CA setup for trusted SSL"
@@ -98,7 +100,7 @@ complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a sit
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 
 # Site-name completion for commands taking <site>/<name> as their 2nd token
-for cmd in remove snapshot restore db-export db-import creds wp clone db adminer
+for cmd in remove snapshot restore db-export db-import creds wp clone db adminer cache
     complete -c wpdev -f -n "__fish_seen_subcommand_from $cmd; and __wpdev_arg_n 2" -a "(__wpdev_sites)"
 end
 
@@ -108,6 +110,9 @@ complete -c wpdev -f -n "__fish_seen_subcommand_from shell; and __wpdev_shell_ph
 
 # `logs [service]`
 complete -c wpdev -f -n "__fish_seen_subcommand_from logs; and __wpdev_arg_n 2" -a "(__wpdev_services)"
+
+# `cache <site> on|off`
+complete -c wpdev -f -n "__fish_seen_subcommand_from cache; and __wpdev_arg_n 3" -a "on off"
 
 # File completion for restore-all's and db-import's file argument -- no -f,
 # so fish's normal filesystem completion applies here instead of just the

@@ -44,6 +44,8 @@ _wpdev() {
         'portainer:Open Portainer in the browser'
         'mailpit:Open Mailpit in the browser'
         'reload-nginx:Test and reload Nginx config'
+        'cache:Toggle nginx full-page cache for a site'
+        'cache-purge:Clear the full-page cache'
         'backup:mysqldump --all-databases to backups/'
         'restore-all:Replace every database from a backup'
         'install-mkcert:One-time local CA setup for trusted SSL'
@@ -74,6 +76,13 @@ _wpdev() {
         remove|snapshot|restore|db-export|db-import|creds|wp|clone|db|adminer)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
+            fi
+            ;;
+        cache)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
+                compadd on off
             fi
             ;;
         shell)

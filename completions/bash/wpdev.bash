@@ -37,7 +37,7 @@ _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update status doctor logs shell db adminer portainer mailpit reload-nginx backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help"
+    cmds="up down restart update status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
@@ -49,6 +49,13 @@ _wpdev_complete() {
         remove|snapshot|restore|db-export|db-import|creds|wp|clone|db|adminer)
             if [ "$COMP_CWORD" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            fi
+            ;;
+        cache)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "on off" -- "$cur"))
             fi
             ;;
         shell)

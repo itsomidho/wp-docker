@@ -99,6 +99,41 @@ jobs:
           echo "HTTP after php82 restart, no nginx reload: $code"
           [ "$code" = "200" ]
 
+      - name: >
+          Regression test -- full-page cache must not silently drop the
+          security headers (nginx's add_header inheritance rule replaces,
+          not merges with, the server block's headers once a location
+          defines its own -- found live while building this feature)
+        run: |
+          ./wpdev cache citest on
+          docker exec wp-nginx nginx -t
+          sleep 1
+          code=$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/)
+          [ "$code" = "200" ]
+
+          headers=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/)
+          echo "$headers"
+          echo "$headers" | grep -qi "^x-content-type-options:"
+          echo "$headers" | grep -qi "^x-frame-options:"
+          echo "$headers" | grep -qi "^x-fastcgi-cache:"
+
+          # Second request should HIT; a cookie that looks logged-in should BYPASS.
+          second=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$second" | grep -qi "HIT"
+          bypassed=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 -b "wordpress_logged_in_x=1" https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$bypassed" | grep -qi "BYPASS"
+
+          ./wpdev cache-purge
+          purged=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$purged" | grep -qi "MISS"
+
+          ./wpdev cache citest off
+          docker exec wp-nginx nginx -t
+          sleep 1
+          off_headers=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/)
+          ! echo "$off_headers" | grep -qi "^x-fastcgi-cache:"
+          echo "$off_headers" | grep -qi "^x-content-type-options:"
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone
