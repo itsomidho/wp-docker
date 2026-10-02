@@ -162,8 +162,11 @@ jobs:
           rm -f sites/citest/.cache-ttl sites/citest/.cache-bypass-cookies
 
           # Invalid input must fail loudly with a real message, not silently.
+          # print_error writes to stdout (plain echo), not stderr -- redirect
+          # accordingly, confirmed the hard way when 2> alone left this log
+          # empty and the next line died on it under set -e.
           echo "bogus" > sites/citest/.cache-ttl
-          if ./wpdev cache citest on 2>/tmp/cache_err.log; then
+          if ./wpdev cache citest on >/tmp/cache_err.log 2>&1; then
             echo "expected 'wpdev cache citest on' to fail on an invalid .cache-ttl, but it succeeded"
             exit 1
           fi
