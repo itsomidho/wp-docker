@@ -1,0 +1,104 @@
+#compdef wpdev
+#
+# Zsh completion for wpdev (wp-local-dev's CLI). Autoloadable: works with
+# plain zsh (add this file's directory to $fpath before `compinit`) and with
+# oh-my-zsh (symlink the wpdev/ directory containing this file into
+# ~/.oh-my-zsh/custom/plugins/wpdev, then add wpdev to plugins=(...) in
+# .zshrc -- oh-my-zsh adds each listed plugin's directory to $fpath itself).
+#
+# Site-name completion resolves wpdev's own project directory the same way
+# wpdev itself does (readlink -f on its own path, see SCRIPT_DIR in wpdev),
+# and reads nginx/sites/*.conf -- the same source wpdev's own site_domains()
+# treats as authoritative -- not sites/*/, which can contain stray leftover
+# directories that were never actually provisioned.
+
+_wpdev_root() {
+    local p
+    p="$(command -v wpdev 2>/dev/null)" || return 1
+    dirname "$(readlink -f "$p")"
+}
+
+_wpdev_sites() {
+    local root f name
+    root="$(_wpdev_root)" || return
+    for f in "$root"/nginx/sites/*.conf(N); do
+        name="${f:t:r}"
+        [[ "$name" == default ]] && continue
+        print -r -- "${name%.test}"
+    done
+}
+
+_wpdev() {
+    local -a cmds
+    cmds=(
+        'up:Start all containers'
+        'down:Stop all containers'
+        'restart:Restart all containers'
+        'update:git pull, then rebuild + recreate all containers'
+        'status:Show container status'
+        'doctor:Proactive health check'
+        'logs:Tail logs (all services, or one)'
+        'shell:Shell into a container'
+        'db:Open a MySQL prompt'
+        'adminer:Open Adminer in the browser'
+        'portainer:Open Portainer in the browser'
+        'mailpit:Open Mailpit in the browser'
+        'reload-nginx:Test and reload Nginx config'
+        'backup:mysqldump --all-databases to backups/'
+        'restore-all:Replace every database from a backup'
+        'install-mkcert:One-time local CA setup for trusted SSL'
+        'clean:Remove containers (keeps data)'
+        'clean-all:Remove containers + volumes (deletes data)'
+        'uninstall:Remove containers/volumes/images + the wpdev symlink'
+        'add:Provision a new WordPress site'
+        'remove:Delete a site'
+        'clone:Duplicate a site under a new domain'
+        'snapshot:Save a files+DB snapshot of a site'
+        'restore:Restore a site from a snapshot'
+        "db-export:Dump just that site's database"
+        "db-import:Replace that site's database from a dump"
+        'list:List configured site domains'
+        'hosts:Print /etc/hosts entries needed for all sites'
+        "creds:Show a site's admin/DB credentials"
+        'wp:Run a WP-CLI command against a site'
+        'help:Show usage'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' cmds
+        return
+    fi
+
+    local subcmd="${words[2]}"
+    case "$subcmd" in
+        remove|snapshot|restore|db-export|db-import|creds|wp|clone|db|adminer)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            fi
+            ;;
+        shell)
+            if (( CURRENT == 3 )); then
+                compadd php db nginx redis
+            elif (( CURRENT == 4 )) && [[ "${words[3]}" == php ]]; then
+                compadd 8.1 8.2 8.3 8.4
+            fi
+            ;;
+        logs)
+            if (( CURRENT == 3 )); then
+                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer
+            fi
+            ;;
+        restore-all)
+            if (( CURRENT == 3 )); then
+                _files
+            fi
+            ;;
+        db-import)
+            if (( CURRENT == 4 )); then
+                _files
+            fi
+            ;;
+    esac
+}
+
+_wpdev "$@"

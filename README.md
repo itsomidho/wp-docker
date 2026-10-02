@@ -47,21 +47,45 @@ another machine needs that last line again. If you'd rather not touch
 `~/.local/bin`, every command below also works as `./wpdev <command>` from
 inside this folder — no difference in behavior, just typing.
 
-### Tab completion (fish)
+### Tab completion
+
+All three complete subcommands (with descriptions), PHP versions for
+`shell php <TAB>`, service names for `logs <TAB>`, and site names for
+anything that takes one (`remove`, `clone`, `snapshot`, `restore`,
+`db-export`, `db-import`, `creds`, `wp`, `db`, `adminer`) — resolved from
+`nginx/sites/*.conf`, the same source `wpdev` itself treats as the
+authoritative site list, not `sites/*/` (which can contain stray leftover
+directories).
+
+**fish** — autoloads from this path by filename, no reload needed:
 
 ```bash
 ln -sf "$(pwd)/completions/wpdev.fish" ~/.config/fish/completions/wpdev.fish
 ```
 
-Fish autoloads completions from that directory by filename — no reload
-needed, just open a new tab (or run `complete -e wpdev` in the current one,
-then retype). Completes subcommands, PHP versions for `shell php <TAB>`,
-service names for `logs <TAB>`, and site names for anything that takes one
-(`remove`, `clone`, `snapshot`, `restore`, `db-export`, `db-import`,
-`creds`, `wp`, `db`, `adminer`) — resolved from `nginx/sites/*.conf`, the
-same source `wpdev` itself treats as the authoritative site list, not
-`sites/*/` (which can contain stray leftover directories). Only fish is
-covered for now; bash/zsh completions aren't written.
+**bash** — source it from `~/.bashrc`, or symlink it (no `.bash` extension)
+into bash-completion's user directory if you have that package:
+
+```bash
+echo 'source '"$(pwd)"'/completions/bash/wpdev.bash' >> ~/.bashrc
+```
+
+**zsh (plain)** — add its directory to `$fpath` before `compinit` runs in
+`~/.zshrc`, then start a new shell:
+
+```bash
+echo 'fpath=("'"$(pwd)"'/completions/zsh/wpdev" $fpath)' >> ~/.zshrc
+```
+
+**zsh (oh-my-zsh)** — symlink the whole directory in as a plugin, then add
+`wpdev` to your `plugins=(...)` line:
+
+```bash
+ln -sf "$(pwd)/completions/zsh/wpdev" ~/.oh-my-zsh/custom/plugins/wpdev
+```
+```zsh
+plugins=(... wpdev)
+```
 
 ## Uninstalling
 
