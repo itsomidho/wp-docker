@@ -60,7 +60,7 @@ touches `docker-compose.yml`.
 
 ## Prerequisites
 
-- Docker (20.10+) and Docker Compose (2.0+)
+- [Docker](https://docs.docker.com/get-docker/) (20.10+) and [Docker Compose](https://docs.docker.com/compose/install/) (2.0+)
 - [mkcert](https://github.com/FiloSottile/mkcert) for trusted local SSL — install with `wpdev install-mkcert` (see below)
 
 ## Installation
