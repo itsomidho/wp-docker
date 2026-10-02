@@ -456,6 +456,17 @@ at creation time — this doesn't run again on an existing site:
 Neither depends on Redis or the full-page cache — they're just a better
 default for every site regardless of what else is turned on.
 
+**None of `wpdev`'s core functionality depends on any of these plugins
+actually installing** — including Redis's own `redis-cache` plugin.
+Every plugin install in `wpdev add` is best-effort: if one fails (no
+network reaching wordpress.org, wordpress.org itself being down, a
+transient error), it prints a warning and the site still finishes
+provisioning and becomes reachable, just without that one plugin. Found
+and fixed live by forcing a real network failure during provisioning —
+every plugin install here used to be able to take the *entire site*
+down with it if it failed, which defeats the point of a plugin being
+optional.
+
 ## Full-page cache (nginx FastCGI)
 
 Off by default — Redis above only caches WordPress's own objects/queries;

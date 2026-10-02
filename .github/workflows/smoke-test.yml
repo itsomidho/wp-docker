@@ -68,6 +68,34 @@ jobs:
           ! ls sites/citest/wp-content/plugins/ | grep -qx "akismet"
 
       - name: >
+          Regression test -- a site must still provision and become
+          reachable even if redis-cache/query-monitor/wp-crontrol all
+          fail to install. Each had the exact same unguarded set -e
+          failure as nginx-helper's (found by re-reading the code, never
+          actually exercised until this test) -- nginx never got brought
+          up until after these installs, so any one of them failing
+          aborted provisioning entirely, leaving an unreachable site.
+          A separate throwaway site, not citest -- its own plugin state
+          is checked by other steps and shouldn't be disturbed.
+        run: |
+          docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
+          docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
+
+          out=$(printf 'depfail.test\n8.2\ny\nn\n' | ./wpdev add 2>&1)
+          echo "$out"
+          echo "$out" | grep -qi "Could not install the redis-cache plugin"
+          echo "$out" | grep -qi "Could not install query-monitor"
+          echo "$out" | grep -qi "Could not install wp-crontrol"
+          echo "$out" | grep -qi "depfail.test is ready"
+
+          sleep 1
+          code=$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' --resolve depfail.test:443:127.0.0.1 https://depfail.test/)
+          [ "$code" = "200" ]
+
+          docker exec wp-php82 sh -c "grep -v wordpress.org /etc/hosts > /tmp/hosts.new && cat /tmp/hosts.new > /etc/hosts && rm /tmp/hosts.new"
+          printf 'depfail.test\n' | ./wpdev remove depfail
+
+      - name: >
           Regression test -- clone must produce a valid nginx vhost
           (a past bug left the PHP_UPSTREAM placeholder unsubstituted,
           which silently invalidated nginx's entire config)

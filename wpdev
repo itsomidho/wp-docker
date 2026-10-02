@@ -1826,20 +1826,31 @@ PHP
     # `redis enable` is a warning, not a hard stop: the site works fine
     # without an object cache, just slower.
     print_step "8/9 Enabling Redis object cache..."
+    # Best-effort, not required: a failed plugin download (no network
+    # reaching wordpress.org, etc.) must not take the rest of site
+    # provisioning down with it -- the site is perfectly usable without
+    # object caching, just slower on repeat queries. Same reasoning and
+    # same bug class as nginx-helper's install further down.
+    redis_plugin_ok=1
     if docker compose exec -T "$php_svc" wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin already installed"
-    else
-        docker compose exec -T "$php_svc" wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+    elif docker compose exec -T "$php_svc" wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin installed and activated"
+    else
+        redis_plugin_ok=0
+        print_warning "Could not install the redis-cache plugin -- site works fine without object caching."
+        print_warning "Retry with: wpdev wp ${site_name} plugin install redis-cache --activate"
     fi
 
-    if docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
-        print_info "Object cache already enabled"
-    elif docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
-        print_info "Object cache enabled"
-    else
-        print_warning "Could not enable the Redis object cache — site works fine without it."
-        print_warning "Check with: wpdev wp ${site_name} redis status"
+    if [ "$redis_plugin_ok" -eq 1 ]; then
+        if docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
+            print_info "Object cache already enabled"
+        elif docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+            print_info "Object cache enabled"
+        else
+            print_warning "Could not enable the Redis object cache — site works fine without it."
+            print_warning "Check with: wpdev wp ${site_name} redis status"
+        fi
     fi
 
     # 9. Dev-experience plugins -- remove WordPress's stock defaults nobody
@@ -1851,12 +1862,15 @@ PHP
     docker compose exec -T "$php_svc" wp plugin delete hello akismet --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     print_info "Removed Hello Dolly + Akismet (if present)"
 
+    # Best-effort, not required, same reasoning as redis-cache/nginx-helper:
+    # a failed download must not take the rest of provisioning down with it.
     for plugin in query-monitor wp-crontrol; do
         if docker compose exec -T "$php_svc" wp plugin is-installed "$plugin" --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
             print_info "${plugin} already installed"
-        else
-            docker compose exec -T "$php_svc" wp plugin install "$plugin" --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+        elif docker compose exec -T "$php_svc" wp plugin install "$plugin" --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
             print_info "${plugin} installed and activated"
+        else
+            print_warning "Could not install ${plugin} -- skipping (not required for the site to work)."
         fi
     done
 
