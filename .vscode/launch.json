@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Listen for Xdebug (wp-local-dev)",
+      "type": "php",
+      "request": "launch",
+      "port": 9003,
+      "pathMappings": {
+        "/var/www": "${workspaceFolder}/sites"
+      },
+      "xdebugSettings": {
+        "max_data": 1024,
+        "max_children": 128,
+        "max_depth": 5
+      }
+    }
+  ]
+}

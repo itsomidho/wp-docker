@@ -43,7 +43,14 @@ nginx/sites/*
 Thumbs.db
 
 # IDE files
-.vscode/
+#
+# .vscode/launch.json is shipped on purpose (see README's "Xdebug" section)
+# -- generic, no personal paths beyond ${workspaceFolder}, no secrets.
+# Ignoring the dir outright would silently stop tracking it for anyone who
+# re-generates it with a different file inside, since a `!` negation can't
+# un-ignore a file inside an already-ignored directory.
+.vscode/*
+!.vscode/launch.json
 .idea/
 *.swp
 *.swo

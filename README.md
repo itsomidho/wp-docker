@@ -225,7 +225,8 @@ Press enter at the PHP prompt to take the default (8.2). That one command:
 6. Runs `wp core install` — **no browser installer, no Adminer step**
 7. Installs + activates the `redis-cache` plugin and enables the object cache
 8. Removes Hello Dolly + Akismet, installs + activates Query Monitor and WP Crontrol
-9. Reloads Nginx and offers to add the `/etc/hosts` entry for you
+9. Normalizes file permissions so wp-admin can install plugins/themes and uploads (see below)
+10. Reloads Nginx and offers to add the `/etc/hosts` entry for you
 
 Visit `https://mysite.test` — it's a working, logged-in-capable WordPress
 site with Redis object caching already on. The admin password is also saved
@@ -327,7 +328,7 @@ for you, just tells you the command to run:
 - Every expected container actually running (not just present)
 - Orphaned `wp-*` containers left over from a renamed/removed service
 - mkcert's local CA actually exists (not just that `mkcert` is installed)
-- A stray root-owned `docker/` directory at the repo root, if present
+- A stray `docker/` directory at the repo root, if present
 - Disk usage of `sites/`
 - Per site: `/etc/hosts` entry present, SSL cert present, and — the one
   this was built for — **whether the database `wp-config.php` actually
@@ -743,11 +744,19 @@ dev machine; worth remembering if this box is ever shared or exposed.
 wp-local-dev/
 ├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
+├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
+├── install.sh                   # curl|bash installer (see Installation)
 ├── install-mkcert.sh            # one-time mkcert installer, called by `wpdev install-mkcert`
+│
+├── completions/                 # see Tab completion
+│   ├── fish/wpdev.fish
+│   ├── bash/wpdev.bash
+│   └── zsh/{_wpdev,wpdev.plugin.zsh}
 │
 ├── php/
 │   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli
+│   ├── install-php-extensions   # mlocati/docker-php-extension-installer, used by the Dockerfile
 │   ├── xdebug.ini
 │   ├── mail.ini                 # sendmail_path -> msmtp
 │   ├── msmtprc                  # msmtp: relay to mailpit:1025
@@ -768,9 +777,15 @@ wp-local-dev/
 │   ├── .db-password
 │   └── .php-version             # which PHP container serves this site (see "Multiple PHP versions")
 │
-└── logs/
-    ├── nginx/                   # access/error logs, per site
-    └── cron.log                 # real WP-Cron activity, every site, one file
+├── logs/
+│   ├── nginx/                   # access/error logs, per site
+│   └── cron.log                 # real WP-Cron activity, every site, one file
+│
+├── snapshots/<site>/            # `wpdev snapshot`/`restore` (git-ignored, created on demand)
+├── backups/                      # `wpdev backup`/`db-export` (git-ignored, created on demand)
+│
+├── .vscode/launch.json          # Xdebug VS Code config, shipped — see "Xdebug"
+└── .github/workflows/           # CI: provisions real sites and exercises every feature above on each push
 ```
 
 ## Troubleshooting
@@ -780,7 +795,7 @@ wp-local-dev/
 | `wpdev: command not found` | Either re-run the symlink step above, or use `./wpdev` instead (from inside this folder) |
 | SSL not trusted | `wpdev install-mkcert` |
 | Can't reach a site | `cat /etc/hosts \| grep <domain>` — add via `wpdev hosts` |
-| 502 Bad Gateway | `docker compose restart php` |
+| 502 Bad Gateway | `docker compose restart php81 php82 php83 php84` (there's no single `php` service — see "Multiple PHP versions") |
 | Nginx won't reload | `docker exec wp-nginx nginx -t` for the actual error |
 | Permission denied under `sites/` | `sudo chown -R $USER:$USER sites/` |
 | `docker compose build` fails to reach the internet | your network may need a proxy — set `HTTP_PROXY`/`HTTPS_PROXY` in `.env` (see `.env.example`); left unset, no proxy is used |
