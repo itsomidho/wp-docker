@@ -260,9 +260,16 @@ jobs:
           here aborted before the nginx reload ever ran, leaving the
           vhost regenerated on disk but never actually loaded)
         run: |
-          # Must clear wp-cli's own plugin zip cache first, or the install
-          # silently succeeds from a previously-downloaded copy regardless
-          # of the network being down -- confirmed the hard way.
+          # Must actually uninstall nginx-helper first (the previous test
+          # step already installed it successfully, and `cache off` only
+          # deactivates, never uninstalls) -- otherwise `wp plugin
+          # is-installed` finds it already present and takes the
+          # activate-only branch, which needs no network at all, silently
+          # never exercising the install path this test exists to break.
+          # Clearing wp-cli's own plugin zip cache too, or the install
+          # succeeds from a previously-downloaded copy regardless of the
+          # network being down. Both confirmed the hard way.
+          ./wpdev wp citest plugin delete nginx-helper 2>/dev/null || true
           docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
           docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
 
