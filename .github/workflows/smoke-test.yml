@@ -179,6 +179,36 @@ jobs:
           ./wpdev cache citest off
           docker exec wp-nginx nginx -t
 
+      - name: >
+          Regression test -- per-site bypass paths must be anchored, not
+          loose substring (a bare /cart/ would also false-positive on
+          /shop/cart/), and the sed delimiter must survive a path value
+          that itself contains '/' (both found live while building this)
+        run: |
+          printf '/cart/\n/checkout/*\n' > sites/citest/.cache-bypass-paths
+          ./wpdev cache citest on
+          docker exec wp-nginx nginx -t
+
+          conf=nginx/sites/citest.test.conf
+          grep -q '\^/cart/\$' "$conf"
+          grep -q '\^/checkout/' "$conf"
+
+          sleep 1
+          exact=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/cart/ | grep -i x-fastcgi-cache)
+          echo "$exact" | grep -qi "BYPASS"
+          prefix=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/checkout/payment/ | grep -i x-fastcgi-cache)
+          echo "$prefix" | grep -qi "BYPASS"
+          # The actual regression: without anchoring, both of these would
+          # incorrectly bypass too.
+          not_exact=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/shop/cart/ | grep -i x-fastcgi-cache)
+          echo "$not_exact" | grep -qi "MISS\|HIT"
+          not_prefix=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/my-cart-page/ | grep -i x-fastcgi-cache)
+          echo "$not_prefix" | grep -qi "MISS\|HIT"
+
+          rm -f sites/citest/.cache-bypass-paths
+          ./wpdev cache citest off
+          docker exec wp-nginx nginx -t
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

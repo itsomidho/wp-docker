@@ -44,7 +44,14 @@ server {
     if ($query_string != "") {
         set $skip_cache 1;
     }
-    if ($request_uri ~* "/wp-admin/|/xmlrpc.php|wp-login\.php|wp-cron\.php") {
+    # CACHE_BYPASS_PATHS is the whole pattern (baseline wp-admin/xmlrpc/
+    # wp-login/wp-cron rules, anchored -- a bare substring match on
+    # /wp-admin/ would also false-positive on /my-wp-admin-clone/ -- plus
+    # whatever sites/<name>/.cache-bypass-paths adds, e.g. WooCommerce's
+    # /cart/, /checkout/), built entirely by `wpdev cache`. Never left as a
+    # bare placeholder that could end up empty: an empty alternative in a
+    # regex matches everything, which would disable caching site-wide.
+    if ($request_uri ~* "CACHE_BYPASS_PATHS") {
         set $skip_cache 1;
     }
     # CACHE_BYPASS_COOKIES is the baseline WP cookies above plus whatever
@@ -89,7 +96,7 @@ server {
         # Visible proof of what happened (HIT/MISS/BYPASS) -- the whole
         # point of turning this on locally is to actually see cache
         # behavior, not just trust that it's working.
-        add_header X-FastCGI-Cache $upstream_cache_status;
+        add_header X-FastCGI-Cache $upstream_cache_status always;
     }
 
     # Deny access to Apache .ht* files (used by Apache)

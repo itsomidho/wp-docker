@@ -468,29 +468,44 @@ show up as a `HIT` until you `wpdev cache-purge` — the cache stores the
 whole response including headers, so toggling or editing doesn't
 retroactively fix what's already sitting in it.
 
-### Per-site TTL and extra bypass cookies
+### Per-site TTL, extra bypass cookies, and extra bypass paths
 
-Two optional files, read when you run `wpdev cache <site> on`:
+Three optional files, read when you run `wpdev cache <site> on`:
 
 ```
 sites/mysite/.cache-ttl               # a plain duration, e.g. 5m or 1h -- defaults to 60m
 sites/mysite/.cache-bypass-cookies    # one cookie name per line, added to the baseline rules above
+sites/mysite/.cache-bypass-paths      # one URL path per line, added to the baseline rules above
 ```
 
-`.cache-bypass-cookies` takes cookie **names**, never nginx regex — a
-trailing `*` means "starts with" (for a cookie with a dynamic suffix, like
-WooCommerce's session cookie), anything else must match that exact name:
+Both bypass files take plain names, never nginx regex — a trailing `*`
+means "starts with" (for a cookie with a dynamic suffix, or a path whose
+sub-pages should all bypass too), anything else must match exactly:
 
 ```
+# .cache-bypass-cookies
 woocommerce_items_in_cart
 wp_woocommerce_session_*
+
+# .cache-bypass-paths
+/cart/
+/checkout/*
 ```
 
-`wpdev cache` validates both files and escapes the cookie names itself
-before they reach nginx, so a typo fails here with a clear message
-instead of silently breaking the generated config or (worse) being
-interpreted as nginx syntax. A bare `*` or a leading `*` (e.g. `*_session`)
-is rejected — the contract is prefix-only, and only at the end.
+The two files aren't matched the same way under the hood, deliberately.
+Cookies use a loose substring match, same as the baseline WordPress rules
+already did — a cookie name colliding by coincidence with another
+cookie's name or value is rare enough not to matter. Paths are anchored
+(`^pattern$` for an exact path, `^pattern` for a prefix) because URL
+hierarchies routinely share prefixes for real — a loose substring match on
+`/cart/` would also incorrectly bypass `/shop/cart/`.
+
+`wpdev cache` validates every line against a strict whitelist and escapes
+it itself before it reaches nginx, so a typo fails here with a clear
+message instead of silently breaking the generated config or (worse)
+being interpreted as nginx syntax. A bare `*` or a leading `*` (e.g.
+`*_session`, `*/checkout/`) is rejected either way — the contract is
+prefix-only, and only at the end.
 
 ## Mail catching (Mailpit)
 

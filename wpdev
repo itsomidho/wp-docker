@@ -663,8 +663,50 @@ cmd_cache() {
             done < "$cookie_file"
         fi
 
+        # sites/<name>/.cache-bypass-paths -- one URL path per line, never
+        # raw regex. Same trailing-'*'-means-prefix contract as the cookies
+        # file, but anchored (^pattern$ for exact, ^pattern for prefix)
+        # rather than loose substring -- unlike cookie names, URL paths
+        # routinely share prefixes (a bare substring match on /cart/ would
+        # also false-positive on /shop/cart/), so this one needs real
+        # anchoring to mean what it looks like it means. The baseline
+        # wp-admin/xmlrpc/wp-login/wp-cron rules get the same anchoring.
+        bypass_paths='^/wp-admin/|^/xmlrpc\\.php$|^/wp-login\\.php$|^/wp-cron\\.php$'
+        path_file="sites/${site_name}/.cache-bypass-paths"
+        if [ -f "$path_file" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                [ -z "$line" ] && continue
+                case "$line" in \#*) continue ;; esac
+
+                path="$line"
+                is_prefix=0
+                case "$path" in
+                    *'*') path="${path%\*}"; is_prefix=1 ;;
+                esac
+                case "$path" in
+                    *[!A-Za-z0-9/_.-]*|'')
+                        print_error "Invalid line in ${path_file}: '${line}' -- paths may only contain letters, digits, '/', '_', '-', '.', and an optional trailing '*' for a prefix match."
+                        ;;
+                esac
+                # Same doubled-backslash reasoning as the cookie escaping
+                # above -- $bypass_paths is a sed REPLACEMENT value too.
+                escaped="$(echo "$path" | sed 's/\./\\\\./g')"
+                if [ "$is_prefix" -eq 1 ]; then
+                    bypass_paths="${bypass_paths}|^${escaped}"
+                else
+                    bypass_paths="${bypass_paths}|^${escaped}\$"
+                fi
+            done < "$path_file"
+        fi
+
         sed -i "s/CACHE_TTL/$ttl/g" "nginx/sites/${domain}.conf"
         sed -i "s/CACHE_BYPASS_COOKIES/$bypass/g" "nginx/sites/${domain}.conf"
+        # '#' delimiter, not '/': unlike cookie names, every path value
+        # contains '/' by definition (e.g. "/cart/"), which would otherwise
+        # end the sed replacement field early -- confirmed the hard way,
+        # this broke outright the moment a real path was involved.
+        sed -i "s#CACHE_BYPASS_PATHS#$bypass_paths#g" "nginx/sites/${domain}.conf"
     fi
 
     if [ "$mode" = "on" ]; then
