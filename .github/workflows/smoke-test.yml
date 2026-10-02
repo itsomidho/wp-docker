@@ -251,6 +251,41 @@ jobs:
           ./wpdev wp citest plugin list --field=name --status=active | ( ! grep -qx "nginx-helper" )
 
       - name: >
+          Regression test -- core caching must not depend on nginx-helper
+          actually installing. Forces a real network failure (not a code
+          path trick) inside the php82 container specifically -- the
+          runner's own /etc/hosts doesn't affect container DNS at all,
+          each container has its own -- then confirms caching still works
+          and the command doesn't abort (found live: an unguarded failure
+          here aborted before the nginx reload ever ran, leaving the
+          vhost regenerated on disk but never actually loaded)
+        run: |
+          # Must clear wp-cli's own plugin zip cache first, or the install
+          # silently succeeds from a previously-downloaded copy regardless
+          # of the network being down -- confirmed the hard way.
+          docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
+          docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
+
+          out=$(./wpdev cache citest on 2>&1)
+          echo "$out"
+          echo "$out" | grep -qi "Could not set up nginx-helper"
+          docker exec wp-nginx nginx -t
+
+          sleep 1
+          code=$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' --resolve citest.test:443:127.0.0.1 https://citest.test/)
+          [ "$code" = "200" ]
+          r=$(curl -sk --noproxy '*' -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$r" | grep -qi "HIT\|MISS"
+          ./wpdev wp citest plugin list --field=name --status=active | ( ! grep -qx "nginx-helper" )
+
+          # /etc/hosts inside a container can't be sed -i'd (it's a special
+          # bind-mounted file, "Device or resource busy" on rename) --
+          # overwrite its content in place instead.
+          docker exec wp-php82 sh -c "grep -v wordpress.org /etc/hosts > /tmp/hosts.new && cat /tmp/hosts.new > /etc/hosts && rm /tmp/hosts.new"
+          ./wpdev cache citest off
+          docker exec wp-nginx nginx -t
+
+      - name: >
           Regression test -- a site missing .php-version (predates
           multi-PHP support) must not silently break status/list/creds
           for every OTHER site too (found live: it died mid-loop)

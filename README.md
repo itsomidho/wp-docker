@@ -502,6 +502,16 @@ Redis options for an unrelated caching mode the plugin also supports,
 etc.) are set once from the plugin's own documented defaults, not
 guessed — verified directly against its source.
 
+**The core caching feature doesn't depend on this plugin.** Installing
+it needs the internet (downloading from wordpress.org); the actual
+FastCGI cache — MISS/HIT/BYPASS, TTL, every bypass rule above — is pure
+nginx config with zero WordPress involvement. If the plugin install
+fails for any reason, `wpdev cache <site> on` still enables real caching
+and just prints a warning instead of aborting — confirmed by forcing the
+install to fail on purpose. You'd only lose auto-purge-on-save, and can
+still clear things manually with `wpdev cache-purge` or just wait out
+the TTL. Re-running `wpdev cache <site> on` retries the plugin setup.
+
 A config change (or a stale page from before you last purged) can still
 show up as a `HIT` until you `wpdev cache-purge` — the cache stores the
 whole response including headers, so toggling or editing doesn't
