@@ -336,6 +336,25 @@ jobs:
           rm -f nginx/sites/phptest.test.conf
           rm -rf sites/phptest
 
+      - name: >
+          Regression test -- www-data (the real PHP-FPM user, i.e. a
+          plugin/theme install triggered from wp-admin in a browser) must
+          be able to create its own directories under wp-content/upgrade
+          and wp-content/plugins. Found live on wp-lab: everything wp-cli
+          writes during provisioning runs as root (docker compose exec
+          defaults to root), so without the chgrp+setgid fix in `wpdev
+          add`, www-data had no write access at all and a real wp-admin
+          plugin install failed with WP-CLI/WordPress's own "Installation
+          failed: Could not create directory."
+        run: |
+          docker exec -u www-data wp-php82 sh -c "
+            set -e
+            mkdir -p /var/www/citest/wp-content/upgrade/permtest
+            mkdir -p /var/www/citest/wp-content/plugins/permtest
+            rmdir /var/www/citest/wp-content/upgrade/permtest
+            rmdir /var/www/citest/wp-content/plugins/permtest
+          "
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

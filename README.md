@@ -467,6 +467,45 @@ every plugin install here used to be able to take the *entire site*
 down with it if it failed, which defeats the point of a plugin being
 optional.
 
+## File permissions
+
+Every site's files end up written by two different users, and that
+mismatch used to make wp-admin plugin/theme installs fail outright:
+
+- `wpdev` itself (`wp core install`, `wp plugin install`, `wp config set`,
+  the real WP-Cron loop, ...) runs wp-cli via `docker compose exec`, which
+  defaults to **root** inside the container.
+- The actual website — including a plugin install you trigger from
+  wp-admin in your browser — is served by PHP-FPM, which runs as
+  **www-data**.
+
+Without a fix, everything `wpdev` touches ends up owned `root:root`, and
+www-data has no write access to it at all — so installing a plugin from
+wp-admin failed with WP-CLI/WordPress's own
+`Installation failed: Could not create directory.` error, because
+www-data couldn't create its temp extraction folder under
+`wp-content/upgrade/`.
+
+`wpdev add` now fixes this as the last step of provisioning: every file
+and directory under a new site is `chgrp`'d to `www-data`, and every
+directory additionally gets the setgid bit (`chmod g+ws`). Setgid means
+any *new* file or directory created later — by wp-cli running as root,
+by the real WP-Cron loop, or by www-data itself — inherits the `www-data`
+group from its parent instead of its creator's own group, so this keeps
+holding up as a site grows, not just at creation time.
+
+If you hit this error on a site created before this fix (or see any
+other "Could not create directory" / "Permission denied" style error
+from wp-admin), fix it the same way by hand:
+
+```bash
+docker compose exec <phpXX> chgrp -R www-data /var/www/<site>
+docker compose exec <phpXX> sh -c "find /var/www/<site> -type d -exec chmod g+ws {} +"
+docker compose exec <phpXX> sh -c "find /var/www/<site> -type f -exec chmod g+w {} +"
+```
+
+(`<phpXX>` is whichever PHP version the site uses — see `wpdev list`.)
+
 ## Full-page cache (nginx FastCGI)
 
 Off by default — Redis above only caches WordPress's own objects/queries;

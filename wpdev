@@ -126,6 +126,14 @@ show_help() {
 # ---------------------------------------------------------------------------
 
 cmd_up() {
+    # Group-writable so www-data (PHP-FPM, inside every phpXX container) can
+    # create its own top-level dirs here too -- e.g. wp-cli's cache dir
+    # (/var/www/.wp-cli), which it otherwise warns about (non-fatal, just
+    # slower repeat downloads) every time a plugin install runs as www-data
+    # instead of root. A fresh git checkout gets ./sites at whatever mode
+    # the checkout's umask produced, so this can't just be committed once.
+    chmod g+w sites 2>/dev/null || true
+
     docker compose up -d
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
 }
@@ -1873,6 +1881,29 @@ PHP
             print_warning "Could not install ${plugin} -- skipping (not required for the site to work)."
         fi
     done
+
+    # Fix file permissions so WordPress's own browser-driven actions (plugin
+    # installs/updates from wp-admin, media uploads) can actually write.
+    # Everything up to this point was written by wp-cli running as root
+    # (`docker compose exec` defaults to root in this image) -- but PHP-FPM
+    # itself runs the real web requests as www-data, so without this,
+    # www-data can read those files but can't create new ones next to them
+    # (root:root, 755 -- group is root, and www-data isn't a member of it).
+    # Setting the group to www-data plus the setgid bit on every directory
+    # means any NEW file or directory -- no matter who creates it afterwards
+    # -- inherits group www-data instead of its creator's own group, so a
+    # plugin install from wp-admin (www-data) can create its own
+    # subdirectories under wp-content/upgrade and wp-content/plugins too.
+    if docker compose exec -T "$php_svc" sh -c "
+        chgrp -R www-data /var/www/${site_name} &&
+        find /var/www/${site_name} -type d -exec chmod g+ws {} + &&
+        find /var/www/${site_name} -type f -exec chmod g+w {} +
+    " </dev/null >/dev/null 2>&1; then
+        print_info "File permissions set so wp-admin can install plugins/themes and uploads"
+    else
+        print_warning "Could not normalize file permissions for ${site_name} -- plugin/theme installs from wp-admin may fail with 'Could not create directory'."
+        print_warning "Fix manually: docker compose exec ${php_svc} chgrp -R www-data /var/www/${site_name} && docker compose exec ${php_svc} chmod -R g+w /var/www/${site_name}"
+    fi
 
     # Bring up Nginx (and reload, in case it was already running) so the new
     # vhost + cert are picked up.
