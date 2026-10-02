@@ -209,6 +209,22 @@ jobs:
           ./wpdev cache citest off
           docker exec wp-nginx nginx -t
 
+      - name: >
+          Regression test -- a site missing .php-version (predates
+          multi-PHP support) must not silently break status/list/creds
+          for every OTHER site too (found live: it died mid-loop)
+        run: |
+          echo "# fake site, no .php-version on purpose" > nginx/sites/phptest.test.conf
+          mkdir -p sites/phptest
+          ./wpdev status | tee /tmp/status.log
+          grep -q "citest.test" /tmp/status.log
+          grep -q "citest-clone.test" /tmp/status.log
+          ./wpdev list | tee /tmp/list.log
+          grep -q "citest" /tmp/list.log
+          ./wpdev creds phptest
+          rm -f nginx/sites/phptest.test.conf
+          rm -rf sites/phptest
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

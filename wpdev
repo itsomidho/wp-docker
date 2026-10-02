@@ -205,7 +205,13 @@ cmd_status() {
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         config="sites/${site_name}/wp-config.php"
-        php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)"
+        # || true: set -e gotcha -- cat on a missing .php-version (any site
+        # that predates multi-PHP support) exits nonzero even with stderr
+        # silenced, and this bare assignment isn't exempt the way
+        # `cmd1 && cmd2` is. Confirmed live: without this, ONE site missing
+        # the marker file silently killed status reporting for every site,
+        # not just itself, since it died mid-loop.
+        php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)" || true
         [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
         php_svc="$(php_slug "$php_version")"
 
@@ -303,7 +309,10 @@ cmd_doctor() {
     fi
 
     if command -v mkcert >/dev/null 2>&1; then
-        caroot="$(mkcert -CAROOT 2>/dev/null)"
+        # || true: same set -e gotcha as elsewhere -- mkcert -CAROOT failing
+        # (unlikely, but possible if mkcert is installed yet not fully
+        # functional) shouldn't silently abort the rest of doctor's checks.
+        caroot="$(mkcert -CAROOT 2>/dev/null)" || true
         if [ -f "${caroot}/rootCA.pem" ]; then
             print_info "mkcert local CA exists (${caroot})"
         else
@@ -951,7 +960,10 @@ cmd_list() {
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         if [ -d "sites/${site_name}" ]; then
-            php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)"
+            # || true: same set -e gotcha as cmd_status -- a site missing
+            # .php-version would otherwise silently kill `wpdev list` for
+            # every site, not just itself.
+            php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)" || true
             [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
             wp_status="provisioned, php ${php_version}"
         else
@@ -993,7 +1005,8 @@ cmd_creds() {
         return 1
     fi
 
-    php_version="$(cat "$dir/.php-version" 2>/dev/null)"
+    # || true: same set -e gotcha as cmd_status/cmd_list.
+    php_version="$(cat "$dir/.php-version" 2>/dev/null)" || true
     [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
 
     echo "Site: $site"
