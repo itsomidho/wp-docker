@@ -2,6 +2,17 @@
 .env
 
 # WordPress installations
+#
+# sites/html/ will reappear on its own (empty) the first time a phpXX
+# container starts -- it's Docker auto-creating the base image's WORKDIR
+# (/var/www/html, from the official wordpress:phpX-fpm image), not a real
+# site. Harmless to have, but don't delete it by hand while containers are
+# already running: Docker only auto-creates a missing WORKDIR when a
+# container *starts*, not for `docker exec` into one already running, so
+# removing it out from under a live container breaks every bare
+# `docker compose exec $php_svc ...` call (no explicit --workdir) against
+# it with "chdir to cwd (/var/www/html) ... no such file or directory" --
+# confirmed the hard way, it silently broke wpdev status's cache check.
 sites/*/
 
 # Database data
