@@ -1621,13 +1621,13 @@ cmd_add() {
     # 1. Bring up MySQL + PHP + Redis (needed for wp-cli/db/cache steps below;
     #    harmless if already running). Nginx is brought up/reloaded later
     #    once its config and cert exist.
-    print_step "1/8 Starting MySQL + ${php_svc} + Redis..."
+    print_step "1/9 Starting MySQL + ${php_svc} + Redis..."
     docker compose up -d mysql "$php_svc" redis >/dev/null
     wait_for_mysql
     print_info "MySQL, PHP and Redis are up"
 
     # 2. Nginx configuration — one file, immediately served (no enable step)
-    print_step "2/8 Creating Nginx configuration..."
+    print_step "2/9 Creating Nginx configuration..."
     mkdir -p nginx/sites
 
     if [ -f "nginx/sites/${domain}.conf" ]; then
@@ -1645,7 +1645,7 @@ cmd_add() {
     fi
 
     # 3. Download WordPress
-    print_step "3/8 Downloading WordPress..."
+    print_step "3/9 Downloading WordPress..."
     mkdir -p "sites/$site_name"
     echo "$php_version" > "sites/${site_name}/.php-version"
 
@@ -1666,7 +1666,7 @@ cmd_add() {
     fi
 
     # 4. Database + dedicated DB user
-    print_step "4/8 Provisioning database..."
+    print_step "4/9 Provisioning database..."
 
     # Safety net: files already existed (step 3 skipped the download) but
     # wp-config.php is missing — this is NOT the normal "brand new site"
@@ -1704,7 +1704,7 @@ cmd_add() {
     print_info "Database '${db_name}' and user '${db_user}' ready"
 
     # 5. wp-config.php via WP-CLI
-    print_step "5/8 Generating wp-config.php..."
+    print_step "5/9 Generating wp-config.php..."
     if [ -f "sites/${site_name}/wp-config.php" ]; then
         print_info "wp-config.php already exists. Skipping."
     else
@@ -1732,7 +1732,7 @@ PHP
     fi
 
     # 6. SSL certificate
-    print_step "6/8 Generating SSL certificate..."
+    print_step "6/9 Generating SSL certificate..."
     mkdir -p nginx/ssl/certs nginx/ssl/private
 
     if ! command -v mkcert >/dev/null 2>&1; then
@@ -1751,7 +1751,7 @@ PHP
     fi
 
     # 7. WordPress install (skip the browser installer entirely)
-    print_step "7/8 Installing WordPress..."
+    print_step "7/9 Installing WordPress..."
     admin_pass_file="sites/${site_name}/.admin-password"
     if docker compose exec -T "$php_svc" wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "WordPress already installed. Skipping."
@@ -1781,7 +1781,7 @@ PHP
     # its object-cache.php, then verify Redis actually responds. A failed
     # `redis enable` is a warning, not a hard stop: the site works fine
     # without an object cache, just slower.
-    print_step "8/8 Enabling Redis object cache..."
+    print_step "8/9 Enabling Redis object cache..."
     if docker compose exec -T "$php_svc" wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin already installed"
     else
@@ -1797,6 +1797,24 @@ PHP
         print_warning "Could not enable the Redis object cache — site works fine without it."
         print_warning "Check with: wpdev wp ${site_name} redis status"
     fi
+
+    # 9. Dev-experience plugins -- remove WordPress's stock defaults nobody
+    # uses in a dev environment, add the two most useful general-purpose
+    # debugging plugins. Not tied to Redis/FastCGI caching specifically
+    # (unlike redis-cache above, these are just a better default for every
+    # site regardless of what else is turned on).
+    print_step "9/9 Removing default plugins, installing dev plugins..."
+    docker compose exec -T "$php_svc" wp plugin delete hello akismet --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+    print_info "Removed Hello Dolly + Akismet (if present)"
+
+    for plugin in query-monitor wp-crontrol; do
+        if docker compose exec -T "$php_svc" wp plugin is-installed "$plugin" --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+            print_info "${plugin} already installed"
+        else
+            docker compose exec -T "$php_svc" wp plugin install "$plugin" --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+            print_info "${plugin} installed and activated"
+        fi
+    done
 
     # Bring up Nginx (and reload, in case it was already running) so the new
     # vhost + cert are picked up.

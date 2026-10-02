@@ -58,6 +58,15 @@ jobs:
       - name: Redis object cache connected
         run: ./wpdev wp citest redis status | grep -q "Connected"
 
+      - name: Default plugins adjusted (hello/akismet removed, dev plugins active)
+        run: |
+          plugins=$(./wpdev wp citest plugin list --field=name --status=active)
+          echo "$plugins"
+          echo "$plugins" | grep -qx "query-monitor"
+          echo "$plugins" | grep -qx "wp-crontrol"
+          ! ls sites/citest/wp-content/plugins/ | grep -qx "hello"
+          ! ls sites/citest/wp-content/plugins/ | grep -qx "akismet"
+
       - name: >
           Regression test -- clone must produce a valid nginx vhost
           (a past bug left the PHP_UPSTREAM placeholder unsubstituted,

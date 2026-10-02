@@ -151,7 +151,7 @@ Database:        wp_mysite
 PHP version:     8.3 (php83)
 
 Continue? (y/n): y
-[STEP] 1/8 Starting MySQL + php83 + Redis...
+[STEP] 1/9 Starting MySQL + php83 + Redis...
 ...
 ✓ mysite.test is ready
 
@@ -171,7 +171,8 @@ Press enter at the PHP prompt to take the default (8.2). That one command:
 5. Generates an mkcert SSL certificate
 6. Runs `wp core install` — **no browser installer, no Adminer step**
 7. Installs + activates the `redis-cache` plugin and enables the object cache
-8. Reloads Nginx and offers to add the `/etc/hosts` entry for you
+8. Removes Hello Dolly + Akismet, installs + activates Query Monitor and WP Crontrol
+9. Reloads Nginx and offers to add the `/etc/hosts` entry for you
 
 Visit `https://mysite.test` — it's a working, logged-in-capable WordPress
 site with Redis object caching already on. The admin password is also saved
@@ -436,6 +437,24 @@ wpdev shell redis                # raw redis-cli, e.g. KEYS mysite:*
 
 Redis has no volume — it's purely a cache, so a restart just means the next
 few page loads repopulate it. `wpdev remove` flushes a site's own keys.
+
+## Default plugins
+
+Every site provisioned by `wpdev add` has its plugin list adjusted once,
+at creation time — this doesn't run again on an existing site:
+
+- **Removed**: Hello Dolly and Akismet, WordPress's own stock defaults.
+  Nobody uses either on a local dev box, so they're just clutter in the
+  plugins list.
+- **Installed + activated**: [Query Monitor](https://wordpress.org/plugins/query-monitor/)
+  (queries, hooks, template parts, HTTP API calls, PHP errors — the
+  standard WP debugging plugin) and
+  [WP Crontrol](https://wordpress.org/plugins/wp-crontrol/) (view, run, and
+  debug scheduled cron events from wp-admin — the natural companion to
+  this project's real WP-Cron setup, see below).
+
+Neither depends on Redis or the full-page cache — they're just a better
+default for every site regardless of what else is turned on.
 
 ## Full-page cache (nginx FastCGI)
 
