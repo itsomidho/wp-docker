@@ -1,9 +1,62 @@
 # WordPress Docker Multi-Site — Local Development
 
-A Docker-based environment for running multiple WordPress sites locally with
-Nginx, MySQL, Redis (object cache), and Adminer — each site picks its own
-PHP version (8.1–8.4) at creation time. Everything is driven by one command,
-`wpdev`. Adding a site is one call and does not touch `docker-compose.yml`.
+A Docker-based environment for running any number of independent WordPress
+sites locally — each with its own PHP version, database, SSL certificate,
+and object cache — provisioned and managed through one command, `wpdev`.
+It's built to behave like a real hosting stack (Nginx + PHP-FPM + MySQL +
+Redis, optional full-page caching with auto-purge, a real WP-Cron loop,
+outgoing-mail capture) rather than a bare WordPress container, so bugs that
+only show up under production-like conditions (stale cache, cron backlogs,
+wrong PHP version) show up here too, locally, before they show up somewhere
+that matters. Adding a site is one interactive call, `wpdev add`, and never
+touches `docker-compose.yml`.
+
+## Features
+
+- **Multi-site, multi-PHP** — any number of sites, each genuinely running
+  its own PHP version (8.1–8.4) in its own PHP-FPM container, not just a
+  label. See [Multiple PHP versions](#multiple-php-versions).
+- **One-command provisioning** — `wpdev add` creates the vhost, database,
+  SSL certificate, WordPress install, and default plugins in one
+  interactive step. See [Getting started](#getting-started).
+- **Redis object cache** — installed, activated, and enabled automatically
+  on every site, with per-site cache-key prefixing so sites never collide.
+  See [Redis object cache](#redis-object-cache).
+- **Optional nginx FastCGI full-page cache** — opt-in per site, with
+  auto-purge-on-save (via the nginx-helper plugin), per-site TTL, and
+  configurable bypass cookies/paths. See
+  [Full-page cache (nginx FastCGI)](#full-page-cache-nginx-fastcgi).
+- **Sensible default plugins** — Hello Dolly and Akismet removed, Query
+  Monitor and WP Crontrol installed and activated, on every site. See
+  [Default plugins](#default-plugins).
+- **Real WP-Cron** — an actual per-minute cron loop per PHP version, not
+  WordPress's page-load-triggered pseudo-cron, so scheduled posts and
+  queued jobs actually run on a quiet dev site. See
+  [Real WP-Cron](#real-wp-cron).
+- **Mail catching** — every site's outgoing mail (password resets, order
+  emails, notifications) is caught by Mailpit instead of actually being
+  sent, nothing to configure per site. See
+  [Mail catching (Mailpit)](#mail-catching-mailpit).
+- **Correct file permissions out of the box** — wp-admin plugin/theme
+  installs and media uploads just work; no manual `chown`/`chmod` needed
+  after creating a site. See [File permissions](#file-permissions).
+- **Cloning, snapshots, and backups** — duplicate a site under a new
+  domain, snapshot/restore before a risky change, full-stack or per-site
+  database backup and restore. See [Cloning a site](#cloning-a-site),
+  [Snapshots](#snapshots), and
+  [Full-stack backup and restore](#full-stack-backup-and-restore).
+- **Status and diagnostics** — `wpdev status` for a live per-site
+  dashboard (HTTP, database, cache), `wpdev doctor` for problems that will
+  bite you later rather than right now. See
+  [Status dashboard](#status-dashboard) and [Doctor](#doctor).
+- **Xdebug on demand** — installed but only attaches when triggered, so
+  normal page loads stay fast. See [Xdebug](#xdebug).
+- **Portainer and Adminer included** — container/image management and
+  database browsing in the browser, no extra setup. See
+  [Portainer](#portainer-containerimage-dashboard) and
+  [Access points](#access-points).
+- **Tab completion** — fish, bash, and zsh, completing subcommands, PHP
+  versions, and site names. See [Tab completion](#tab-completion).
 
 ## Prerequisites
 
