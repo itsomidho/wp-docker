@@ -94,6 +94,7 @@ show_help() {
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  reload-nginx              Test and reload Nginx config"
     echo "  backup                    mysqldump --all-databases to backups/"
+    echo "  restore-all [file]        Replace every database from a backup (defaults to the latest in backups/)"
     echo "  install-mkcert            One-time local CA setup for trusted SSL"
     echo "  clean                     Remove containers (keeps data)"
     echo "  clean-all                 Remove containers + volumes (⚠ deletes data)"
@@ -573,6 +574,72 @@ cmd_backup() {
     echo "Creating backup..."
     docker exec wp-mysql mysqldump -u root -p"$(grep DB_ROOT_PASSWORD .env | cut -d '=' -f2)" --all-databases > "backups/all_databases_${timestamp}.sql"
     echo "Backup saved to: backups/all_databases_${timestamp}.sql"
+}
+
+# Counterpart to `backup` -- until this existed, backup was one-directional:
+# you could dump every database, but the only way to actually use that dump
+# was hand-crafting a `mysql < dump.sql` yourself. A mysqldump --all-databases
+# file already contains its own CREATE DATABASE/USE statements per database,
+# so piping the whole thing into a bare `mysql` (no database selected) is the
+# standard, correct way to restore one.
+cmd_restore_all() {
+    in_file="$1"
+    if [ -z "$in_file" ]; then
+        # Lexical sort = chronological, same reasoning as snapshot IDs: the
+        # timestamp format (YYYYMMDD_HHMMSS) sorts correctly as text.
+        in_file="$(ls -1 backups/all_databases_*.sql backups/all_databases_*.sql.gz 2>/dev/null | sort | tail -1)"
+        if [ -z "$in_file" ]; then
+            print_error "No backups found in backups/. Run 'wpdev backup' first, or pass a file explicitly."
+        fi
+        print_info "No file given — using the most recent backup: ${in_file}"
+    fi
+    if [ ! -f "$in_file" ]; then
+        print_error "No such file: ${in_file}"
+    fi
+
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    if [ -z "${DB_ROOT_PASSWORD:-}" ]; then
+        print_error "DB_ROOT_PASSWORD is not set in .env"
+    fi
+
+    echo "This will REPLACE every database currently in MySQL with the contents of:"
+    echo "  ${in_file}"
+    echo ""
+    echo "Any current data not already in this backup will be lost. This does NOT"
+    echo "back up the current state first — run 'wpdev backup' before this if you"
+    echo "want to keep what's there now."
+    echo ""
+    echo "Known sites right now: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+    echo ""
+    read -p "Type RESTORE to confirm: " confirm
+    if [ "$confirm" != "RESTORE" ]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    print_step "1/2 Restoring from ${in_file}..."
+    # Not swallowing stderr here (unlike db-import) -- this touches every
+    # database at once, so a partial/silent failure is worth seeing.
+    if gzip -t "$in_file" 2>/dev/null; then
+        gunzip -c "$in_file" | docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD"
+    else
+        docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" < "$in_file"
+    fi
+    print_info "Databases restored"
+
+    print_step "2/2 Flushing Redis (every site's object cache)..."
+    if docker compose exec -T redis true </dev/null >/dev/null 2>&1; then
+        docker compose exec -T redis redis-cli FLUSHALL >/dev/null 2>&1
+    fi
+    print_info "Cache flushed"
+
+    echo ""
+    print_info "All databases restored from ${in_file}."
 }
 
 cmd_install_mkcert() { ./install-mkcert.sh; }
@@ -1605,6 +1672,7 @@ case "${1:-help}" in
     mailpit) cmd_mailpit ;;
     reload-nginx) cmd_reload_nginx ;;
     backup) cmd_backup ;;
+    restore-all) cmd_restore_all "$2" ;;
     install-mkcert) cmd_install_mkcert ;;
     clean) cmd_clean ;;
     clean-all) cmd_clean_all ;;

@@ -160,6 +160,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev mailpit` | Open Mailpit in the browser — every site's outgoing mail, caught |
 | `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
 | `wpdev backup` | `mysqldump --all-databases` to `backups/` |
+| `wpdev restore-all [file]` | Replace every database from a backup (defaults to the latest in `backups/`) |
 | `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
 | `wpdev clean` | Remove containers (keeps data) |
 | `wpdev clean-all` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
@@ -335,6 +336,21 @@ Snapshots are never deleted automatically — not by `restore`, and not by
 `wpdev remove` on the site they belong to (a safety net shouldn't quietly
 disappear as a side effect of something else). Clean up `snapshots/<site>/`
 by hand when you no longer need them.
+
+## Full-stack backup and restore
+
+```bash
+wpdev backup                       # -> backups/all_databases_<timestamp>.sql
+wpdev restore-all                  # restores the latest backup in backups/
+wpdev restore-all path/to/file.sql # or a specific one (.sql or .sql.gz)
+```
+
+`wpdev backup` used to be one-directional — the only way to actually use a
+dump was hand-crafting a `mysql < dump.sql` yourself. `restore-all` replaces
+*every* database currently in MySQL with the backup's contents, so it asks
+you to type `RESTORE` (not just `y`/`yes`) before doing anything, and doesn't
+back up the current state first — run `wpdev backup` right before it if you
+want to keep what's there now.
 
 ## Sharing a site's database
 
