@@ -720,8 +720,34 @@ cmd_cache() {
 
     if [ "$mode" = "on" ]; then
         touch "sites/${site_name}/.cache"
+
+        # nginx-helper: auto-purges this site's own cached pages on save,
+        # via its "unlink files" method -- verified directly against the
+        # plugin's source that this needs zero nginx-side changes, since
+        # our fastcgi_cache_path (levels=1:2) and fastcgi_cache_key
+        # ("$scheme$request_method$host$request_uri") already exactly
+        # match what unlink_files expects (it's the plugin's own
+        # documented recipe). Needs the cache directory actually shared
+        # between nginx and php (see docker-compose.yml) -- PHP has no
+        # other way to reach files nginx wrote.
+        if docker compose exec -T "$php_svc" wp plugin is-installed nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+            docker compose exec -T "$php_svc" wp plugin activate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+        else
+            docker compose exec -T "$php_svc" wp plugin install nginx-helper --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+        fi
+        docker compose exec -T "$php_svc" wp config set RT_WP_NGINX_HELPER_CACHE_PATH '/var/cache/nginx/fastcgi' --type=constant --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+        # Full options array, not just the two keys that matter
+        # (enable_purge, purge_method) -- activating via WP-CLI never
+        # populates this option at all (the plugin's own activator checks
+        # current_user_can(), which is always false with no WP-CLI user
+        # context, so its store_default_options() call never runs).
+        # Values taken directly from the plugin's own
+        # nginx_helper_default_settings(), not guessed.
+        docker compose exec -T "$php_svc" wp option update rt_wp_nginx_helper_options '{"enable_purge":1,"cache_method":"enable_fastcgi","purge_method":"unlink_files","enable_map":0,"enable_log":0,"log_level":"INFO","log_filesize":"5","enable_stamp":0,"purge_homepage_on_edit":1,"purge_homepage_on_del":1,"purge_archive_on_edit":1,"purge_archive_on_del":1,"purge_archive_on_new_comment":0,"purge_archive_on_deleted_comment":0,"purge_page_on_mod":1,"purge_page_on_new_comment":1,"purge_page_on_deleted_comment":1,"purge_feeds":1,"redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","redis_unix_socket":"","redis_database":0,"redis_username":"","redis_password":"","purge_url":"","redis_enabled_by_constant":0,"purge_amp_urls":1,"redis_socket_enabled_by_constant":0,"redis_acl_enabled_by_constant":0,"preload_cache":0,"is_cache_preloaded":0,"roles_with_purge_cap":[],"purge_woo_products":0}' --format=json --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null
+        print_info "nginx-helper installed and configured for auto-purge on save"
     else
         rm -f "sites/${site_name}/.cache"
+        docker compose exec -T "$php_svc" wp plugin deactivate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     fi
 
     if docker exec wp-nginx nginx -t >/dev/null 2>&1; then

@@ -104,6 +104,11 @@ services:
       - ./php/msmtprc:/etc/msmtprc
       - ./php/wp-cron-runner.sh:/usr/local/bin/wp-cron-runner.sh
       - ./logs:/var/log/wpdev
+      # Shared with nginx so the nginx-helper plugin can unlink a site's own
+      # cached pages directly on post save (see `wpdev cache`) -- its
+      # "unlink files" purge method needs real filesystem access to the
+      # same cache nginx writes to, not just an HTTP call.
+      - wp_fastcgi_cache:/var/cache/nginx/fastcgi
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -168,6 +173,9 @@ services:
       - ./logs/nginx:/var/log/nginx
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/sites:/etc/nginx/sites
+      # Named (not container-local) specifically so the phpXX containers
+      # can share it too -- see their own volumes for why.
+      - wp_fastcgi_cache:/var/cache/nginx/fastcgi
     depends_on:
       - php81
       - php82
@@ -180,6 +188,8 @@ volumes:
   wp_mysql_data:
     driver: local
   wp_portainer_data:
+    driver: local
+  wp_fastcgi_cache:
     driver: local
 
 networks:

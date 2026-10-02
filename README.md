@@ -482,6 +482,26 @@ curl -skI https://mysite.test/ | grep -i x-fastcgi-cache
 # MISS the first request, HIT after, BYPASS whenever the rules above apply
 ```
 
+### Auto-purge on save ([nginx-helper](https://wordpress.org/plugins/nginx-helper/))
+
+`wpdev cache <site> on` also installs and configures the nginx-helper
+plugin, so saving a post actually invalidates that stale cache instead of
+leaving it to expire on its own after the TTL. It's configured to use
+nginx-helper's "unlink files" purge method — deleting the exact cache
+file directly from disk — rather than its default (an HTTP request back
+to nginx), because that default needs a commercial/third-party nginx
+module (`ngx_cache_purge`) this project's stock `nginx:alpine` image
+doesn't have. "Unlink files" needs real filesystem access to the same
+cache nginx wrote to, which is why the `wp_fastcgi_cache` volume in
+`docker-compose.yml` is shared between the `nginx` and every `phpXX`
+service, not kept container-local.
+
+Turning cache `off` deactivates the plugin again (it has nothing to
+purge without caching on); the 30+ other plugin settings (purge rules,
+Redis options for an unrelated caching mode the plugin also supports,
+etc.) are set once from the plugin's own documented defaults, not
+guessed — verified directly against its source.
+
 A config change (or a stale page from before you last purged) can still
 show up as a `HIT` until you `wpdev cache-purge` — the cache stores the
 whole response including headers, so toggling or editing doesn't

@@ -222,6 +222,35 @@ jobs:
           docker exec wp-nginx nginx -t
 
       - name: >
+          Regression test -- nginx-helper must actually auto-purge on
+          save, not just be installed. Verifies the shared fastcgi cache
+          volume (nginx <-> phpXX) and the unlink_files config actually
+          work end to end, not just that the plugin exists.
+        run: |
+          ./wpdev cache citest on
+          docker exec wp-nginx nginx -t
+
+          plugins=$(./wpdev wp citest plugin list --field=name --status=active)
+          echo "$plugins" | grep -qx "nginx-helper"
+          grep -q "RT_WP_NGINX_HELPER_CACHE_PATH" sites/citest/wp-config.php
+
+          sleep 1
+          r() { curl -sk --noproxy '*' -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/ | grep -i x-fastcgi-cache; }
+
+          post_id=$(./wpdev wp citest post create --post_title="CI test post" --post_status=publish --porcelain)
+          sleep 1
+          r | grep -qi "MISS"
+          r | grep -qi "HIT"
+
+          ./wpdev wp citest post update "$post_id" --post_title="CI test post updated"
+          sleep 1
+          r | grep -qi "MISS"
+
+          ./wpdev cache citest off
+          docker exec wp-nginx nginx -t
+          ./wpdev wp citest plugin list --field=name --status=active | ( ! grep -qx "nginx-helper" )
+
+      - name: >
           Regression test -- a site missing .php-version (predates
           multi-PHP support) must not silently break status/list/creds
           for every OTHER site too (found live: it died mid-loop)
