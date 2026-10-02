@@ -47,6 +47,22 @@ another machine needs that last line again. If you'd rather not touch
 `~/.local/bin`, every command below also works as `./wpdev <command>` from
 inside this folder — no difference in behavior, just typing.
 
+### Tab completion (fish)
+
+```bash
+ln -sf "$(pwd)/completions/wpdev.fish" ~/.config/fish/completions/wpdev.fish
+```
+
+Fish autoloads completions from that directory by filename — no reload
+needed, just open a new tab (or run `complete -e wpdev` in the current one,
+then retype). Completes subcommands, PHP versions for `shell php <TAB>`,
+service names for `logs <TAB>`, and site names for anything that takes one
+(`remove`, `clone`, `snapshot`, `restore`, `db-export`, `db-import`,
+`creds`, `wp`, `db`, `adminer`) — resolved from `nginx/sites/*.conf`, the
+same source `wpdev` itself treats as the authoritative site list, not
+`sites/*/` (which can contain stray leftover directories). Only fish is
+covered for now; bash/zsh completions aren't written.
+
 ## Uninstalling
 
 ```bash
