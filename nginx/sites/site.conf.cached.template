@@ -47,7 +47,11 @@ server {
     if ($request_uri ~* "/wp-admin/|/xmlrpc.php|wp-login\.php|wp-cron\.php") {
         set $skip_cache 1;
     }
-    if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in") {
+    # CACHE_BYPASS_COOKIES is the baseline WP cookies above plus whatever
+    # extra cookie names sites/<name>/.cache-bypass-cookies adds (e.g. a
+    # WooCommerce cart cookie) -- built and escaped by `wpdev cache`, never
+    # raw regex a site owner writes by hand.
+    if ($http_cookie ~* "CACHE_BYPASS_COOKIES") {
         set $skip_cache 1;
     }
 
@@ -79,7 +83,7 @@ server {
         fastcgi_read_timeout 300;
 
         fastcgi_cache WPCACHE;
-        fastcgi_cache_valid 200 60m;
+        fastcgi_cache_valid 200 CACHE_TTL;
         fastcgi_cache_bypass $skip_cache;
         fastcgi_no_cache $skip_cache;
         # Visible proof of what happened (HIT/MISS/BYPASS) -- the whole

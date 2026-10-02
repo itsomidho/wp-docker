@@ -468,6 +468,30 @@ show up as a `HIT` until you `wpdev cache-purge` — the cache stores the
 whole response including headers, so toggling or editing doesn't
 retroactively fix what's already sitting in it.
 
+### Per-site TTL and extra bypass cookies
+
+Two optional files, read when you run `wpdev cache <site> on`:
+
+```
+sites/mysite/.cache-ttl               # a plain duration, e.g. 5m or 1h -- defaults to 60m
+sites/mysite/.cache-bypass-cookies    # one cookie name per line, added to the baseline rules above
+```
+
+`.cache-bypass-cookies` takes cookie **names**, never nginx regex — a
+trailing `*` means "starts with" (for a cookie with a dynamic suffix, like
+WooCommerce's session cookie), anything else must match that exact name:
+
+```
+woocommerce_items_in_cart
+wp_woocommerce_session_*
+```
+
+`wpdev cache` validates both files and escapes the cookie names itself
+before they reach nginx, so a typo fails here with a clear message
+instead of silently breaking the generated config or (worse) being
+interpreted as nginx syntax. A bare `*` or a leading `*` (e.g. `*_session`)
+is rejected — the contract is prefix-only, and only at the end.
+
 ## Mail catching (Mailpit)
 
 Every site's outgoing mail — password resets, WooCommerce order emails,

@@ -134,6 +134,51 @@ jobs:
           ! echo "$off_headers" | grep -qi "^x-fastcgi-cache:"
           echo "$off_headers" | grep -qi "^x-content-type-options:"
 
+      - name: >
+          Regression test -- per-site cache TTL and extra bypass cookies
+          (a dotted cookie name must come out escaped in the generated
+          config, and a site with no .cache-ttl file at all must not
+          silently die under set -e -- both found live while building this)
+        run: |
+          echo "5m" > sites/citest/.cache-ttl
+          printf 'woocommerce_items_in_cart\nwp_woocommerce_session_*\nmy.custom.cookie\n' > sites/citest/.cache-bypass-cookies
+          ./wpdev cache citest on
+          docker exec wp-nginx nginx -t
+
+          conf=nginx/sites/citest.test.conf
+          grep -q "fastcgi_cache_valid 200 5m;" "$conf"
+          grep -q 'my\\.custom\\.cookie' "$conf"
+
+          sleep 1
+          prefix_bypass=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 -b "wp_woocommerce_session_abc123=1" https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$prefix_bypass" | grep -qi "BYPASS"
+          dot_bypass=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 -b "my.custom.cookie=1" https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$dot_bypass" | grep -qi "BYPASS"
+          # If the dot were treated as a regex wildcard instead of literal,
+          # this unrelated cookie (dots swapped for X) would also bypass.
+          not_a_match=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 -b "myXcustomXcookie=1" https://citest.test/ | grep -i x-fastcgi-cache)
+          echo "$not_a_match" | grep -qi "HIT\|MISS"
+
+          rm -f sites/citest/.cache-ttl sites/citest/.cache-bypass-cookies
+
+          # Invalid input must fail loudly with a real message, not silently.
+          echo "bogus" > sites/citest/.cache-ttl
+          if ./wpdev cache citest on 2>/tmp/cache_err.log; then
+            echo "expected 'wpdev cache citest on' to fail on an invalid .cache-ttl, but it succeeded"
+            exit 1
+          fi
+          grep -qi "invalid .cache-ttl" /tmp/cache_err.log
+          rm -f sites/citest/.cache-ttl
+
+          # The actual regression: no .cache-ttl file at all (the normal
+          # case for every site that hasn't set one) must enable cleanly.
+          ./wpdev cache citest on
+          docker exec wp-nginx nginx -t
+          grep -q "fastcgi_cache_valid 200 60m;" "$conf"
+
+          ./wpdev cache citest off
+          docker exec wp-nginx nginx -t
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

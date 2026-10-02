@@ -611,6 +611,63 @@ cmd_cache() {
     sed -i "s/PHP_UPSTREAM/$php_svc/g" "nginx/sites/${domain}.conf"
 
     if [ "$mode" = "on" ]; then
+        # sites/<name>/.cache-ttl -- a plain duration (60m, 1h, 30s), not
+        # nginx syntax to hand-tune; validated so a typo fails here with a
+        # clear message instead of a cryptic nginx -t error later.
+        # || true: same set -e gotcha as elsewhere in this script -- cat on
+        # a missing file (the normal case: most sites have no .cache-ttl)
+        # exits nonzero even with stderr silenced, and a bare assignment
+        # isn't exempt from set -e the way `cmd1 && cmd2` is. Confirmed the
+        # hard way: this silently killed the whole command with zero output
+        # whenever .cache-ttl didn't exist.
+        ttl="$(cat "sites/${site_name}/.cache-ttl" 2>/dev/null)" || true
+        [ -z "$ttl" ] && ttl="60m"
+        if [[ ! "$ttl" =~ ^[0-9]+[smhdwMy]?$ ]]; then
+            print_error "Invalid .cache-ttl value '${ttl}' -- expected a plain duration like 60m, 1h, or 30s."
+        fi
+
+        # sites/<name>/.cache-bypass-cookies -- one cookie name per line,
+        # never raw regex. A trailing '*' means "starts with" (needed for
+        # cookies with a dynamic suffix, e.g. WooCommerce's session cookie);
+        # anything else must match that exact name. Validated against a
+        # strict whitelist BEFORE it's escaped and spliced into nginx's
+        # bypass regex, so this file can't break the generated config or
+        # smuggle in nginx syntax -- it only ever contains cookie names.
+        bypass="comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in"
+        cookie_file="sites/${site_name}/.cache-bypass-cookies"
+        if [ -f "$cookie_file" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                [ -z "$line" ] && continue
+                case "$line" in \#*) continue ;; esac
+
+                name="$line"
+                case "$name" in
+                    *'*') name="${name%\*}" ;;
+                esac
+                case "$name" in
+                    *[!A-Za-z0-9_.-]*|'')
+                        print_error "Invalid line in ${cookie_file}: '${line}' -- cookie names may only contain letters, digits, '_', '-', '.', and an optional trailing '*' for a prefix match."
+                        ;;
+                esac
+                # Only '.' needs escaping -- the whitelist above already
+                # excludes every other regex-meaningful character. Doubled
+                # backslash here (not a single \.) because $bypass is used
+                # as a sed REPLACEMENT value below, and sed's own escape
+                # handling in that position silently consumes one layer of
+                # backslash -- confirmed the hard way: without this, the
+                # generated nginx config had a literal unescaped '.' where
+                # a cookie name like "my.cookie" should have had '\.'.
+                escaped="$(echo "$name" | sed 's/\./\\\\./g')"
+                bypass="${bypass}|${escaped}"
+            done < "$cookie_file"
+        fi
+
+        sed -i "s/CACHE_TTL/$ttl/g" "nginx/sites/${domain}.conf"
+        sed -i "s/CACHE_BYPASS_COOKIES/$bypass/g" "nginx/sites/${domain}.conf"
+    fi
+
+    if [ "$mode" = "on" ]; then
         touch "sites/${site_name}/.cache"
     else
         rm -f "sites/${site_name}/.cache"
